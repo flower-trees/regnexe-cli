@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: regnexe-cli
+  main:
+    web-application-type: none
+    banner-mode: off
+
+logging:
+  level:
+    root: WARN
+    # Suppress framework-internal WARNs that are expected and benign:
+    # - CapabilityExecutor: warns when planner hallucinates a capability ID that
+    #   doesn't exist (common with empty tool registry; execution falls back to LLM)
+    # - TaskPlanner: warns on occasional LLM JSON parse hiccups (auto-repaired)
+    org.salt.regnexe.agent.core.task.worker: ERROR
+    org.salt.jlangchain: ERROR

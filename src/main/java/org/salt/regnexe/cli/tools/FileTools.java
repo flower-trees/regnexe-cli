@@ -1,0 +1,292 @@
+package org.salt.regnexe.cli.tools;
+
+import org.jline.terminal.Terminal;
+import org.salt.jlangchain.rag.tools.Tool;
+
+import java.io.IOException;
+import java.io.PrintWriter;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * File-system tools for the agent.
+ * All paths are validated against WorkspaceContext to prevent escapes.
+ */
+public class FileTools {
+
+    private static final int MAX_READ_CHARS  = 8_000;
+    private static final int MAX_SEARCH_HITS = 50;
+
+    public static Tool readFile(WorkspaceContext ctx) {
+        return Tool.builder()
+                .name("read_file")
+                .description(
+                    "Read the content of a file. " +
+                    "Returns the file text with line numbers. " +
+                    "Large files are truncated at " + MAX_READ_CHARS + " characters. " +
+                    "Use relative paths (relative to workspace root) or absolute paths.")
+                .params("path: String")
+                .func(raw -> {
+                    Map<String, Object> args = toMap(raw);
+                    String pathStr = str(args, "path");
+                    Path file = ctx.resolve(pathStr);
+                    if (!Files.exists(file)) return "Error: file not found: " + pathStr;
+                    if (Files.isDirectory(file)) return "Error: path is a directory, use list_files instead";
+                    try {
+                        String content = Files.readString(file);
+                        boolean truncated = content.length() > MAX_READ_CHARS;
+                        if (truncated) content = content.substring(0, MAX_READ_CHARS);
+                        String[] lines = content.split("\n", -1);
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("File: ").append(ctx.displayPath(file)).append("\n");
+                        sb.append("─".repeat(40)).append("\n");
+                        for (int i = 0; i < lines.length; i++) {
+                            sb.append(String.format("%4d  %s\n", i + 1, lines[i]));
+                        }
+                        if (truncated) sb.append("\n[... truncated at ").append(MAX_READ_CHARS).append(" chars ...]");
+                        return sb.toString();
+                    } catch (IOException e) {
+                        return "Error reading file: " + e.getMessage();
+                    }
+                })
+                .build();
+    }
+
+    public static Tool listFiles(WorkspaceContext ctx) {
+        return Tool.builder()
+                .name("list_files")
+                .description(
+                    "List files and directories at the given path. " +
+                    "Pass '.' or empty string to list the workspace root. " +
+                    "Shows file sizes and marks directories with '/'.")
+                .params("path: String")
+                .func(raw -> {
+                    Map<String, Object> args = toMap(raw);
+                    String pathStr = str(args, "path");
+                    Path dir = ctx.resolve(pathStr.isBlank() ? "." : pathStr);
+                    if (!Files.exists(dir)) return "Error: path not found: " + pathStr;
+                    if (!Files.isDirectory(dir)) return "Error: not a directory, use read_file instead";
+                    try {
+                        List<String> entries = new ArrayList<>();
+                        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+                            for (Path entry : stream) {
+                                String name = entry.getFileName().toString();
+                                if (Files.isDirectory(entry)) {
+                                    entries.add("  " + name + "/");
+                                } else {
+                                    long size = Files.size(entry);
+                                    entries.add(String.format("  %-40s %s", name, humanSize(size)));
+                                }
+                            }
+                        }
+                        entries.sort(String.CASE_INSENSITIVE_ORDER);
+                        StringBuilder sb = new StringBuilder();
+                        sb.append("Directory: ").append(ctx.displayPath(dir)).append("\n");
+                        sb.append("─".repeat(40)).append("\n");
+                        entries.forEach(e -> sb.append(e).append("\n"));
+                        sb.append("\n").append(entries.size()).append(" entries");
+                        return sb.toString();
+                    } catch (IOException e) {
+                        return "Error listing directory: " + e.getMessage();
+                    }
+                })
+                .build();
+    }
+
+    public static Tool searchFiles(WorkspaceContext ctx) {
+        return Tool.builder()
+                .name("search_files")
+                .description(
+                    "Search for a text pattern in files recursively. " +
+                    "pattern: the text to search for (case-insensitive). " +
+                    "path: the directory to search in (use '.' for workspace root). " +
+                    "Returns matching lines with file path and line number. " +
+                    "Results are limited to " + MAX_SEARCH_HITS + " matches.")
+                .params("pattern: String, path: String")
+                .func(raw -> {
+                    Map<String, Object> args = toMap(raw);
+                    String pattern = str(args, "pattern");
+                    String pathStr = str(args, "path");
+                    if (pattern.isBlank()) return "Error: pattern is required";
+                    Path searchRoot = ctx.resolve(pathStr.isBlank() ? "." : pathStr);
+                    if (!Files.exists(searchRoot)) return "Error: path not found: " + pathStr;
+
+                    String lowerPattern = pattern.toLowerCase();
+                    List<String> hits = new ArrayList<>();
+                    try {
+                        Files.walk(searchRoot)
+                                .filter(Files::isRegularFile)
+                                .filter(p -> isBinaryUnlikely(p))
+                                .forEach(file -> {
+                                    if (hits.size() >= MAX_SEARCH_HITS) return;
+                                    try {
+                                        List<String> lines = Files.readAllLines(file);
+                                        for (int i = 0; i < lines.size(); i++) {
+                                            if (hits.size() >= MAX_SEARCH_HITS) break;
+                                            if (lines.get(i).toLowerCase().contains(lowerPattern)) {
+                                                hits.add(String.format("%s:%d: %s",
+                                                        ctx.displayPath(file), i + 1, lines.get(i).trim()));
+                                            }
+                                        }
+                                    } catch (Exception ignored) {}
+                                });
+                    } catch (IOException e) {
+                        return "Error searching: " + e.getMessage();
+                    }
+                    if (hits.isEmpty()) return "No matches found for: " + pattern;
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("Search: \"").append(pattern).append("\" in ").append(ctx.displayPath(searchRoot)).append("\n");
+                    sb.append("─".repeat(40)).append("\n");
+                    hits.forEach(h -> sb.append(h).append("\n"));
+                    if (hits.size() >= MAX_SEARCH_HITS) sb.append("\n[results limited to ").append(MAX_SEARCH_HITS).append(" matches]");
+                    return sb.toString();
+                })
+                .build();
+    }
+
+    public static Tool writeFile(WorkspaceContext ctx, Terminal terminal) {
+        return Tool.builder()
+                .name("write_file")
+                .description(
+                    "Write content to a file, creating it if it does not exist or overwriting it. " +
+                    "Always asks the user for confirmation before writing. " +
+                    "Use for creating new files or completely replacing existing ones. " +
+                    "For targeted edits to existing files, prefer edit_file instead.")
+                .params("path: String, content: String")
+                .func(raw -> {
+                    Map<String, Object> args = toMap(raw);
+                    String pathStr = str(args, "path");
+                    String content = str(args, "content");
+                    if (pathStr.isBlank()) return "Error: path is required";
+                    Path file;
+                    try {
+                        file = ctx.resolve(pathStr);
+                    } catch (SecurityException e) {
+                        return "Error: " + e.getMessage();
+                    }
+                    PrintWriter out = terminal.writer();
+                    boolean exists = Files.exists(file);
+                    out.println();
+                    out.println("  Write file: " + ctx.displayPath(file)
+                            + (exists ? "  (overwrites existing)" : "  (new file)"));
+                    out.println("  " + "─".repeat(44));
+                    // Preview first 20 lines
+                    String[] lines = content.split("\n", -1);
+                    int preview = Math.min(lines.length, 20);
+                    for (int i = 0; i < preview; i++) {
+                        out.printf("  %4d  %s%n", i + 1, lines[i]);
+                    }
+                    if (lines.length > preview) {
+                        out.printf("  ... (%d more lines)%n", lines.length - preview);
+                    }
+                    out.println("  " + "─".repeat(44));
+                    out.print("  Apply? [y/N] ");
+                    out.flush();
+                    try {
+                        int ch = terminal.reader().read();
+                        out.println();
+                        out.flush();
+                        if (ch != 'y' && ch != 'Y') return "Write cancelled by user.";
+                        Files.createDirectories(file.getParent());
+                        Files.writeString(file, content);
+                        return "Written: " + ctx.displayPath(file) + " (" + lines.length + " lines)";
+                    } catch (IOException e) {
+                        return "Error writing file: " + e.getMessage();
+                    }
+                })
+                .build();
+    }
+
+    public static Tool editFile(WorkspaceContext ctx, Terminal terminal) {
+        return Tool.builder()
+                .name("edit_file")
+                .description(
+                    "Make a targeted edit to an existing file by replacing an exact string with new text. " +
+                    "old_string must match exactly (including whitespace and indentation) and must be unique in the file. " +
+                    "Shows a diff preview and asks for confirmation before applying. " +
+                    "For replacing the entire file content use write_file instead.")
+                .params("path: String, old_string: String, new_string: String")
+                .func(raw -> {
+                    Map<String, Object> args = toMap(raw);
+                    String pathStr   = str(args, "path");
+                    String oldString = str(args, "old_string");
+                    String newString = str(args, "new_string");
+                    if (pathStr.isBlank())   return "Error: path is required";
+                    if (oldString.isEmpty()) return "Error: old_string is required";
+                    Path file;
+                    try {
+                        file = ctx.resolve(pathStr);
+                    } catch (SecurityException e) {
+                        return "Error: " + e.getMessage();
+                    }
+                    if (!Files.exists(file)) return "Error: file not found: " + pathStr;
+                    if (Files.isDirectory(file)) return "Error: path is a directory";
+                    String current;
+                    try {
+                        current = Files.readString(file);
+                    } catch (IOException e) {
+                        return "Error reading file: " + e.getMessage();
+                    }
+                    int idx = current.indexOf(oldString);
+                    if (idx < 0) return "Error: old_string not found in " + ctx.displayPath(file);
+                    if (current.indexOf(oldString, idx + 1) >= 0) {
+                        return "Error: old_string matches multiple locations — make it more specific";
+                    }
+                    // Build diff preview
+                    String updated = current.substring(0, idx) + newString + current.substring(idx + oldString.length());
+                    PrintWriter out = terminal.writer();
+                    out.println();
+                    out.println("  Edit file: " + ctx.displayPath(file));
+                    out.println("  " + "─".repeat(44));
+                    for (String line : oldString.split("\n", -1)) {
+                        out.println("  [31m- " + line + "[0m");
+                    }
+                    for (String line : newString.split("\n", -1)) {
+                        out.println("  [32m+ " + line + "[0m");
+                    }
+                    out.println("  " + "─".repeat(44));
+                    out.print("  Apply? [y/N] ");
+                    out.flush();
+                    try {
+                        int ch = terminal.reader().read();
+                        out.println();
+                        out.flush();
+                        if (ch != 'y' && ch != 'Y') return "Edit cancelled by user.";
+                        Files.writeString(file, updated);
+                        return "Applied edit to " + ctx.displayPath(file);
+                    } catch (IOException e) {
+                        return "Error writing file: " + e.getMessage();
+                    }
+                })
+                .build();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> toMap(Object args) {
+        return args instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+    }
+
+    private static String str(Map<String, Object> args, String key) {
+        Object v = args.get(key);
+        return v != null ? v.toString().trim() : "";
+    }
+
+    private static String humanSize(long bytes) {
+        if (bytes < 1024) return bytes + "B";
+        if (bytes < 1024 * 1024) return String.format("%.1fKB", bytes / 1024.0);
+        return String.format("%.1fMB", bytes / (1024.0 * 1024));
+    }
+
+    /** Heuristic: skip likely binary files by extension. */
+    private static boolean isBinaryUnlikely(Path path) {
+        String name = path.getFileName().toString().toLowerCase();
+        return !name.endsWith(".class") && !name.endsWith(".jar") && !name.endsWith(".png")
+                && !name.endsWith(".jpg") && !name.endsWith(".gif") && !name.endsWith(".zip")
+                && !name.endsWith(".gz")  && !name.endsWith(".pdf") && !name.endsWith(".exe")
+                && !name.endsWith(".so")  && !name.endsWith(".dylib");
+    }
+}
