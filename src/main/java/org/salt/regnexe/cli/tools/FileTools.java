@@ -21,33 +21,62 @@ public class FileTools {
     private static final int MAX_READ_CHARS  = 8_000;
     private static final int MAX_SEARCH_HITS = 50;
 
+    private static final int DEFAULT_READ_LINES = 200;
+
     public static Tool readFile(WorkspaceContext ctx) {
         return Tool.builder()
                 .name("read_file")
                 .description(
-                    "Read the content of a file. " +
-                    "Returns the file text with line numbers. " +
-                    "Large files are truncated at " + MAX_READ_CHARS + " characters. " +
-                    "Use relative paths (relative to workspace root) or absolute paths.")
-                .params("path: String")
+                    "Read the content of a file with line numbers. " +
+                    "offset: 1-based line number to start from (default 1). " +
+                    "limit: max lines to return (default " + DEFAULT_READ_LINES + "). " +
+                    "The header shows total line count so you know whether to paginate. " +
+                    "Output is capped at " + MAX_READ_CHARS + " characters as a safety limit.")
+                .params("path: String, offset: Integer, limit: Integer")
                 .func(raw -> {
                     Map<String, Object> args = toMap(raw);
                     String pathStr = str(args, "path");
+                    int startLine = intOpt(args, "offset", 1);
+                    int maxLines  = intOpt(args, "limit",  DEFAULT_READ_LINES);
+                    if (startLine < 1) startLine = 1;
+                    if (maxLines  < 1) maxLines  = DEFAULT_READ_LINES;
+
                     Path file = ctx.resolve(pathStr);
                     if (!Files.exists(file)) return "Error: file not found: " + pathStr;
                     if (Files.isDirectory(file)) return "Error: path is a directory, use list_files instead";
                     try {
                         String content = Files.readString(file);
-                        boolean truncated = content.length() > MAX_READ_CHARS;
-                        if (truncated) content = content.substring(0, MAX_READ_CHARS);
                         String[] lines = content.split("\n", -1);
+                        int totalLines = lines.length;
+                        int from = startLine - 1;                          // inclusive, 0-based
+                        int to   = Math.min(totalLines, from + maxLines);  // exclusive
+
                         StringBuilder sb = new StringBuilder();
-                        sb.append("File: ").append(ctx.displayPath(file)).append("\n");
-                        sb.append("─".repeat(40)).append("\n");
-                        for (int i = 0; i < lines.length; i++) {
-                            sb.append(String.format("%4d  %s\n", i + 1, lines[i]));
+                        sb.append("File: ").append(ctx.displayPath(file))
+                          .append("  [").append(totalLines).append(" lines total");
+                        if (from > 0 || to < totalLines) {
+                            sb.append(", showing ").append(from + 1).append("–").append(to);
                         }
-                        if (truncated) sb.append("\n[... truncated at ").append(MAX_READ_CHARS).append(" chars ...]");
+                        sb.append("]\n");
+                        sb.append("─".repeat(40)).append("\n");
+
+                        int charCount = 0;
+                        boolean charTruncated = false;
+                        for (int i = from; i < to; i++) {
+                            String formatted = String.format("%4d  %s\n", i + 1, lines[i]);
+                            if (charCount + formatted.length() > MAX_READ_CHARS) {
+                                sb.append("\n[... char limit reached at line ").append(i + 1)
+                                  .append(", use offset=").append(i + 1).append(" to continue ...]");
+                                charTruncated = true;
+                                break;
+                            }
+                            sb.append(formatted);
+                            charCount += formatted.length();
+                        }
+                        if (!charTruncated && to < totalLines) {
+                            sb.append("\n[... ").append(totalLines - to)
+                              .append(" more lines, use offset=").append(to + 1).append(" to continue ...]");
+                        }
                         return sb.toString();
                     } catch (IOException e) {
                         return "Error reading file: " + e.getMessage();
@@ -273,6 +302,13 @@ public class FileTools {
     private static String str(Map<String, Object> args, String key) {
         Object v = args.get(key);
         return v != null ? v.toString().trim() : "";
+    }
+
+    private static int intOpt(Map<String, Object> args, String key, int defaultValue) {
+        Object v = args.get(key);
+        if (v == null) return defaultValue;
+        try { return Integer.parseInt(v.toString().trim()); }
+        catch (NumberFormatException e) { return defaultValue; }
     }
 
     private static String humanSize(long bytes) {

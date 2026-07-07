@@ -45,6 +45,11 @@ public class CliMain implements CommandLineRunner {
         // Wire api_key from config → Spring @Value before context starts.
         // j-langchain actuators read: models.<vendor>.chat-key or <VENDOR>_KEY env var.
         RexConfig preConfig = RexConfig.load();
+        for (int i = 0; i < args.length; i++) {
+            if ("--session".equals(args[i]) && i + 1 < args.length) {
+                preConfig.setSessionId(args[i + 1]);
+            }
+        }
         String apiKey = preConfig.effectiveApiKey();
         if (apiKey != null && !apiKey.isBlank()) {
             String prop = apiKeyPropFor(preConfig.getModel().getVendor());
@@ -90,6 +95,13 @@ public class CliMain implements CommandLineRunner {
     public void run(String... args) throws Exception {
         RexConfig config = RexConfig.load();
 
+        // Parse --session argument
+        for (int i = 0; i < args.length; i++) {
+            if ("--session".equals(args[i]) && i + 1 < args.length) {
+                config.setSessionId(args[i + 1]);
+            }
+        }
+
         Terminal terminal = TerminalBuilder.builder()
                 .system(true)
                 .dumb(true)
@@ -116,8 +128,7 @@ public class CliMain implements CommandLineRunner {
 
         WorkspaceContext workspace = buildWorkspace(config);
         RegnexeAgent agent = buildAgent(config, terminal, db, workspace);
-        // Use "default" as session name so history persists across runs
-        String sessionId = "default";
+        String sessionId = config.getSessionId();
 
         out.printf("rex v%s  (type /help for commands, /exit to quit)%n", VERSION);
         out.printf("Model: %s/%s%n", config.getModel().getVendor(), config.effectiveModel());

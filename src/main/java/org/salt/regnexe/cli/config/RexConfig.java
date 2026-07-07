@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class RexConfig {
-
+    private String sessionId = "default";
     private ModelConfig model = new ModelConfig();
     private AgentConfig agent = new AgentConfig();
     private ToolsConfig tools = new ToolsConfig();

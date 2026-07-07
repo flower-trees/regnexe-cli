@@ -19,6 +19,27 @@ public class BashTool {
     private static final int MAX_OUTPUT_CHARS = 10_000;
     private static final int TIMEOUT_SECONDS  = 30;
 
+    // Commands that start with these prefixes are treated as read-only (no confirmation needed).
+    private static final List<String> READ_ONLY_PREFIXES = List.of(
+        "ls", "find", "grep", "egrep", "fgrep", "rg",
+        "cat", "head", "tail", "wc", "stat", "file",
+        "echo", "printf", "pwd", "which", "type", "env",
+        "diff", "diff3",
+        "git log", "git diff", "git status", "git show", "git blame",
+        "git branch", "git remote", "git stash list", "git tag",
+        "mvn compile", "mvn test-compile",
+        "mvn dependency:tree", "mvn dependency:list",
+        "java -version", "javac -version",
+        "node --version", "npm list", "yarn list"
+    );
+
+    // Signals that a command has side effects even if it starts with a read-only prefix.
+    private static final List<String> WRITE_SIGNALS = List.of(
+        ">", ">>", "| tee", "|tee", "rm ", "rm\t", "mv ", "mv\t",
+        "cp ", "mkdir", "touch ", "chmod", "chown", "kill ", "pkill",
+        "curl ", "wget "
+    );
+
     private static final List<String> ALWAYS_BLOCKED = List.of(
         "rm -rf /",
         "rm -fr /",
@@ -72,7 +93,8 @@ public class BashTool {
                     out.println("  $ " + command);
                     out.println("  " + "─".repeat(50));
 
-                    if (config.isRequireConfirmation()) {
+                    boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
+                    if (needsConfirm) {
                         out.print("  Execute? [y/N] ");
                         out.flush();
                         try {
@@ -138,6 +160,15 @@ public class BashTool {
                     }
                 })
                 .build();
+    }
+
+    private static boolean isReadOnly(String command) {
+        String trimmed = command.trim().toLowerCase();
+        boolean safePrefix = READ_ONLY_PREFIXES.stream()
+                .anyMatch(p -> trimmed.equals(p) || trimmed.startsWith(p + " ") || trimmed.startsWith(p + "\t"));
+        if (!safePrefix) return false;
+        // Reject if any write signal is present
+        return WRITE_SIGNALS.stream().noneMatch(command::contains);
     }
 
     @SuppressWarnings("unchecked")
