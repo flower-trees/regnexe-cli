@@ -216,10 +216,10 @@ public class FileTools {
                     out.print("  Apply? [y/N] ");
                     out.flush();
                     try {
-                        int ch = terminal.reader().read();
+                        String answer = readLine(terminal);
                         out.println();
                         out.flush();
-                        if (ch != 'y' && ch != 'Y') return "Write cancelled by user.";
+                        if (!answer.equals("y") && !answer.equals("yes")) return "Write cancelled by user.";
                         Files.createDirectories(file.getParent());
                         Files.writeString(file, content);
                         return "Written: " + ctx.displayPath(file) + " (" + lines.length + " lines)";
@@ -281,10 +281,10 @@ public class FileTools {
                     out.print("  Apply? [y/N] ");
                     out.flush();
                     try {
-                        int ch = terminal.reader().read();
+                        String answer = readLine(terminal);
                         out.println();
                         out.flush();
-                        if (ch != 'y' && ch != 'Y') return "Edit cancelled by user.";
+                        if (!answer.equals("y") && !answer.equals("yes")) return "Edit cancelled by user.";
                         Files.writeString(file, updated);
                         return "Applied edit to " + ctx.displayPath(file);
                     } catch (IOException e) {
@@ -324,5 +324,14 @@ public class FileTools {
                 && !name.endsWith(".jpg") && !name.endsWith(".gif") && !name.endsWith(".zip")
                 && !name.endsWith(".gz")  && !name.endsWith(".pdf") && !name.endsWith(".exe")
                 && !name.endsWith(".so")  && !name.endsWith(".dylib");
+    }
+
+    private static String readLine(Terminal terminal) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int ch;
+        while ((ch = terminal.reader().read()) != -1 && ch != '\n' && ch != '\r') {
+            sb.append((char) ch);
+        }
+        return sb.toString().trim().toLowerCase();
     }
 }

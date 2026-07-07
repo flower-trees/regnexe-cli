@@ -4,15 +4,14 @@ import org.jline.terminal.Terminal;
 import org.salt.jlangchain.rag.tools.Tool;
 import org.salt.regnexe.cli.config.RexConfig;
 
-import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 public class BashTool {
 
@@ -39,6 +38,9 @@ public class BashTool {
         "cp ", "mkdir", "touch ", "chmod", "chown", "kill ", "pkill",
         "curl ", "wget "
     );
+
+    // Matches N>/dev/null and >/dev/null (stderr/stdout suppression) — not a write operation.
+    private static final Pattern NULL_REDIRECT = Pattern.compile("\\d*>\\s*/dev/null");
 
     private static final List<String> ALWAYS_BLOCKED = List.of(
         "rm -rf /",
@@ -98,10 +100,10 @@ public class BashTool {
                         out.print("  Execute? [y/N] ");
                         out.flush();
                         try {
-                            int ch = terminal.reader().read();
+                            String answer = readLine(terminal);
                             out.println();
                             out.flush();
-                            if (ch != 'y' && ch != 'Y') return "Command cancelled by user.";
+                            if (!answer.equals("y") && !answer.equals("yes")) return "Command cancelled by user.";
                         } catch (IOException e) {
                             return "Error reading confirmation: " + e.getMessage();
                         }
@@ -162,13 +164,23 @@ public class BashTool {
                 .build();
     }
 
+    private static String readLine(Terminal terminal) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int ch;
+        while ((ch = terminal.reader().read()) != -1 && ch != '\n' && ch != '\r') {
+            sb.append((char) ch);
+        }
+        return sb.toString().trim().toLowerCase();
+    }
+
     private static boolean isReadOnly(String command) {
         String trimmed = command.trim().toLowerCase();
         boolean safePrefix = READ_ONLY_PREFIXES.stream()
                 .anyMatch(p -> trimmed.equals(p) || trimmed.startsWith(p + " ") || trimmed.startsWith(p + "\t"));
         if (!safePrefix) return false;
-        // Reject if any write signal is present
-        return WRITE_SIGNALS.stream().noneMatch(command::contains);
+        // Strip N>/dev/null redirects before checking write signals — they suppress output, not write files.
+        String stripped = NULL_REDIRECT.matcher(command).replaceAll("");
+        return WRITE_SIGNALS.stream().noneMatch(stripped::contains);
     }
 
     @SuppressWarnings("unchecked")
