@@ -17,6 +17,8 @@ import org.salt.regnexe.cli.db.RexDatabase;
 import org.salt.regnexe.cli.db.SqliteConversationStorage;
 import org.salt.regnexe.cli.db.SqliteTaskStore;
 import org.salt.regnexe.cli.event.CliEventListener;
+import org.salt.regnexe.cli.session.SessionContext;
+import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
 import org.salt.regnexe.cli.tools.FileTools;
 import org.salt.regnexe.cli.tools.WorkspaceContext;
@@ -29,6 +31,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.SQLException;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -38,18 +45,14 @@ public class CliMain implements CommandLineRunner {
 
     static final String VERSION = "0.1.0";
 
+    private static final String DEFAULT_SESSION = "default";
+
     @Autowired
     private RegnexeAgentBuilder agentBuilder;
 
     public static void main(String[] args) {
         // Wire api_key from config → Spring @Value before context starts.
-        // j-langchain actuators read: models.<vendor>.chat-key or <VENDOR>_KEY env var.
         RexConfig preConfig = RexConfig.load();
-        for (int i = 0; i < args.length; i++) {
-            if ("--session".equals(args[i]) && i + 1 < args.length) {
-                preConfig.setSessionId(args[i + 1]);
-            }
-        }
         String apiKey = preConfig.effectiveApiKey();
         if (apiKey != null && !apiKey.isBlank()) {
             String prop = apiKeyPropFor(preConfig.getModel().getVendor());
@@ -96,9 +99,10 @@ public class CliMain implements CommandLineRunner {
         RexConfig config = RexConfig.load();
 
         // Parse --session argument
+        String sessionArg = null;
         for (int i = 0; i < args.length; i++) {
             if ("--session".equals(args[i]) && i + 1 < args.length) {
-                config.setSessionId(args[i + 1]);
+                sessionArg = args[i + 1];
             }
         }
 
@@ -126,9 +130,8 @@ public class CliMain implements CommandLineRunner {
             db = null;
         }
 
-        WorkspaceContext workspace = buildWorkspace(config);
-        RegnexeAgent agent = buildAgent(config, terminal, db, workspace);
-        String sessionId = config.getSessionId();
+        SessionContext ctx = resolveSession(sessionArg, config, db);
+        RegnexeAgent agent = buildAgent(ctx, config, terminal, db);
 
         out.printf("rex v%s  (type /help for commands, /exit to quit)%n", VERSION);
         out.printf("Model: %s/%s%n", config.getModel().getVendor(), config.effectiveModel());
@@ -137,14 +140,15 @@ public class CliMain implements CommandLineRunner {
             String envVar = vendorKeyEnvName(config.getModel().getVendor());
             out.printf("[warn] No API key — set %s or api_key in ~/.rex/config.yml%n", envVar);
         }
-        workspace.getRoots().forEach(r -> out.printf("Workspace: %s%n", r));
+        ctx.getWorkspace().getRoots().forEach(r -> out.printf("Workspace: %s%n", r));
+        out.printf("Session: %s%n", ctx.getSessionName());
         out.println();
         out.flush();
 
         while (true) {
             String input;
             try {
-                input = reader.readLine("rex> ");
+                input = reader.readLine("rex [" + ctx.getSessionName() + "]> ");
             } catch (UserInterruptException e) {
                 continue;
             } catch (EndOfFileException e) {
@@ -156,11 +160,11 @@ public class CliMain implements CommandLineRunner {
             if (input.isEmpty()) continue;
 
             if (input.startsWith("/")) {
-                SlashResult result = handleSlashCommand(input, out, config, terminal, agent);
+                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
                 if (result == SlashResult.EXIT) break;
                 if (result == SlashResult.AGENT_REBUILT) {
-                    agent = buildAgent(config, terminal, db, workspace);
-                    sessionId = "default";
+                    // ctx was mutated in-place by handleSlashCommand (/switch)
+                    agent = buildAgent(ctx, config, terminal, db);
                 }
                 continue;
             }
@@ -168,7 +172,7 @@ public class CliMain implements CommandLineRunner {
             try {
                 TaskRequest req = new TaskRequest();
                 req.setGoal(input);
-                req.setSessionId(sessionId);
+                req.setSessionId(ctx.getSessionName());
                 AgentResult result = agent.execute(req);
                 // TASK_TOKEN_SUMMARY fires via listener just before execute() returns.
                 // Print the clean final answer after the token summary line.
@@ -176,6 +180,9 @@ public class CliMain implements CommandLineRunner {
                 if (answer != null && !answer.isBlank()) {
                     out.println(answer);
                     out.flush();
+                }
+                if (db != null) {
+                    try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                 }
             } catch (Exception e) {
                 out.println("  [error] " + e.getMessage());
@@ -191,10 +198,41 @@ public class CliMain implements CommandLineRunner {
         }
     }
 
+    // ── Session resolution ────────────────────────────────────────────────────
+
+    private SessionContext resolveSession(String nameArg, RexConfig config, RexDatabase db) {
+        String sessionName = (nameArg != null && !nameArg.isBlank()) ? nameArg : DEFAULT_SESSION;
+        if (db == null) {
+            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
+        }
+        try {
+            SessionRow row = db.findSessionByName(sessionName).orElse(null);
+            if (row == null) {
+                row = new SessionRow();
+                row.setSessionId(UUID.randomUUID().toString());
+                row.setName(sessionName);
+                row.setWorkingDir(System.getProperty("user.dir"));
+                row.setModel(config.effectiveModel());
+                long now = System.currentTimeMillis();
+                row.setCreatedAt(now);
+                row.setUpdatedAt(now);
+                db.upsertSession(row);
+            }
+            WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
+            return new SessionContext(row.getSessionId(), row.getName(), ws);
+        } catch (SQLException e) {
+            System.err.println("[warn] Session DB error: " + e.getMessage());
+            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
+        }
+    }
+
     // ── Agent factory ────────────────────────────────────────────────────────
 
-    private RegnexeAgent buildAgent(RexConfig config, Terminal terminal, RexDatabase db, WorkspaceContext workspace) {
+    private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal, RexDatabase db) {
         RexConfig.AgentConfig ac = config.getAgent();
+        WorkspaceContext workspace = ctx.getWorkspace();
         var builder = agentBuilder
                 .withDefaultModel(config.getModel().getVendor(), config.effectiveModel())
                 .withEventListener(new CliEventListener(terminal))
@@ -219,13 +257,20 @@ public class CliMain implements CommandLineRunner {
         return builder.build();
     }
 
-    private WorkspaceContext buildWorkspace(RexConfig config) {
-        List<String> configured = config.getWorkspace().getDirs();
+    private WorkspaceContext buildWorkspaceFor(String primaryDir, RexConfig config) {
         List<Path> roots = new ArrayList<>();
-        if (configured != null) {
-            for (String d : configured) {
-                Path p = Path.of(d).toAbsolutePath().normalize();
-                if (Files.isDirectory(p)) roots.add(p);
+        Path primary = Path.of(primaryDir).toAbsolutePath().normalize();
+        if (Files.isDirectory(primary)) {
+            roots.add(primary);
+        }
+        // Fallback: config-specified dirs, then cwd
+        if (roots.isEmpty()) {
+            List<String> configured = config.getWorkspace().getDirs();
+            if (configured != null) {
+                for (String d : configured) {
+                    Path p = Path.of(d).toAbsolutePath().normalize();
+                    if (Files.isDirectory(p)) roots.add(p);
+                }
             }
         }
         if (roots.isEmpty()) {
@@ -240,7 +285,8 @@ public class CliMain implements CommandLineRunner {
 
     private SlashResult handleSlashCommand(String raw, PrintWriter out,
                                            RexConfig config, Terminal terminal,
-                                           RegnexeAgent agent) {
+                                           RegnexeAgent agent,
+                                           SessionContext ctx, RexDatabase db) {
         String[] parts = raw.split("\\s+", 2);
         String cmd = parts[0].toLowerCase();
 
@@ -252,15 +298,111 @@ public class CliMain implements CommandLineRunner {
                         Commands:
                           /help              show this help
                           /exit              exit rex
+                          /sessions          list all sessions
+                          /switch <name>     switch to a session (creates if new)
+                          /clear             clear current session's conversation history
 
                         Coming soon:
                           /add-dir <path>    add a workspace directory
                           /dirs              list workspace directories
-                          /sessions          list sessions
-                          /switch <name>     switch session
-                          /clear             clear current session history
                           /pause             pause current task
                         """);
+                out.flush();
+            }
+
+            case "/sessions" -> {
+                if (db == null) {
+                    out.println("  [warn] Database unavailable");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                try {
+                    List<SessionRow> sessions = db.listSessions();
+                    if (sessions.isEmpty()) {
+                        out.println("  No sessions found.");
+                    } else {
+                        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+                        out.printf("  %-20s  %-36s  %-19s  %s%n", "NAME", "ID", "LAST USED", "WORKING DIR");
+                        out.println("  " + "─".repeat(100));
+                        for (SessionRow row : sessions) {
+                            String lastUsed = LocalDateTime
+                                    .ofInstant(Instant.ofEpochMilli(row.getUpdatedAt()), ZoneId.systemDefault())
+                                    .format(fmt);
+                            String marker = row.getName().equals(ctx.getSessionName()) ? "* " : "  ";
+                            out.printf("%s%-20s  %-36s  %-19s  %s%n",
+                                    marker,
+                                    row.getName(),
+                                    row.getSessionId(),
+                                    lastUsed,
+                                    row.getWorkingDir());
+                        }
+                    }
+                } catch (SQLException e) {
+                    out.println("  [error] " + e.getMessage());
+                }
+                out.flush();
+            }
+
+            case "/switch" -> {
+                String name = parts.length > 1 ? parts[1].trim() : "";
+                if (name.isEmpty()) {
+                    out.println("  Usage: /switch <name>");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                if (name.equals(ctx.getSessionName())) {
+                    out.println("  Already in session: " + name);
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                if (db == null) {
+                    out.println("  [warn] Database unavailable — cannot persist session");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                try {
+                    SessionRow row = db.findSessionByName(name).orElse(null);
+                    if (row == null) {
+                        row = new SessionRow();
+                        row.setSessionId(UUID.randomUUID().toString());
+                        row.setName(name);
+                        row.setWorkingDir(System.getProperty("user.dir"));
+                        row.setModel(config.effectiveModel());
+                        long now = System.currentTimeMillis();
+                        row.setCreatedAt(now);
+                        row.setUpdatedAt(now);
+                        db.upsertSession(row);
+                        out.printf("  Created new session: %s%n", name);
+                    } else {
+                        out.printf("  Resumed session: %s%n", name);
+                    }
+                    WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
+                    // Mutate ctx in-place — main loop rebuilds agent after this returns AGENT_REBUILT.
+                    ctx.setSessionId(row.getSessionId());
+                    ctx.setSessionName(row.getName());
+                    ctx.setWorkspace(ws);
+                    out.printf("  Workspace: %s%n", ws.primaryRoot());
+                } catch (SQLException e) {
+                    out.println("  [error] " + e.getMessage());
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                out.flush();
+                return SlashResult.AGENT_REBUILT;
+            }
+
+            case "/clear" -> {
+                if (db == null) {
+                    out.println("  [warn] Database unavailable");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                try {
+                    db.clearConversation(ctx.getSessionName());
+                    out.printf("  Cleared conversation history for session: %s%n", ctx.getSessionName());
+                } catch (SQLException e) {
+                    out.println("  [error] " + e.getMessage());
+                }
                 out.flush();
             }
 
