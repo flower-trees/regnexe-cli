@@ -41,7 +41,7 @@ public class FileTools {
                     if (startLine < 1) startLine = 1;
                     if (maxLines  < 1) maxLines  = DEFAULT_READ_LINES;
 
-                    Path file = ctx.resolve(pathStr);
+                    Path file = ctx.resolveForRead(pathStr);
                     if (!Files.exists(file)) return "Error: file not found: " + pathStr;
                     if (Files.isDirectory(file)) return "Error: path is a directory, use list_files instead";
                     try {
@@ -96,7 +96,7 @@ public class FileTools {
                 .func(raw -> {
                     Map<String, Object> args = toMap(raw);
                     String pathStr = str(args, "path");
-                    Path dir = ctx.resolve(pathStr.isBlank() ? "." : pathStr);
+                    Path dir = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
                     if (!Files.exists(dir)) return "Error: path not found: " + pathStr;
                     if (!Files.isDirectory(dir)) return "Error: not a directory, use read_file instead";
                     try {
@@ -141,7 +141,7 @@ public class FileTools {
                     String pattern = str(args, "pattern");
                     String pathStr = str(args, "path");
                     if (pattern.isBlank()) return "Error: pattern is required";
-                    Path searchRoot = ctx.resolve(pathStr.isBlank() ? "." : pathStr);
+                    Path searchRoot = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
                     if (!Files.exists(searchRoot)) return "Error: path not found: " + pathStr;
 
                     String lowerPattern = pattern.toLowerCase();
@@ -177,7 +177,7 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool writeFile(WorkspaceContext ctx, Terminal terminal) {
+    public static Tool writeFile(WorkspaceContext ctx, Terminal terminal, Runnable pauseAction) {
         return Tool.builder()
                 .name("write_file")
                 .description(
@@ -213,12 +213,16 @@ public class FileTools {
                         out.printf("  ... (%d more lines)%n", lines.length - preview);
                     }
                     out.println("  " + "─".repeat(44));
-                    out.print("  Apply? [y/N] ");
+                    out.print("  Apply? [y/N/pause] ");
                     out.flush();
                     try {
                         String answer = readLine(terminal);
                         out.println();
                         out.flush();
+                        if ("pause".equals(answer) || "/pause".equals(answer)) {
+                            if (pauseAction != null) pauseAction.run();
+                            return "Task paused by user.";
+                        }
                         if (!answer.equals("y") && !answer.equals("yes")) return "Write cancelled by user.";
                         Files.createDirectories(file.getParent());
                         Files.writeString(file, content);
@@ -230,7 +234,7 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool editFile(WorkspaceContext ctx, Terminal terminal) {
+    public static Tool editFile(WorkspaceContext ctx, Terminal terminal, Runnable pauseAction) {
         return Tool.builder()
                 .name("edit_file")
                 .description(
@@ -278,12 +282,16 @@ public class FileTools {
                         out.println("  [32m+ " + line + "[0m");
                     }
                     out.println("  " + "─".repeat(44));
-                    out.print("  Apply? [y/N] ");
+                    out.print("  Apply? [y/N/pause] ");
                     out.flush();
                     try {
                         String answer = readLine(terminal);
                         out.println();
                         out.flush();
+                        if ("pause".equals(answer) || "/pause".equals(answer)) {
+                            if (pauseAction != null) pauseAction.run();
+                            return "Task paused by user.";
+                        }
                         if (!answer.equals("y") && !answer.equals("yes")) return "Edit cancelled by user.";
                         Files.writeString(file, updated);
                         return "Applied edit to " + ctx.displayPath(file);

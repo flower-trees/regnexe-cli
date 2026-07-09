@@ -10,6 +10,7 @@ import org.jline.terminal.TerminalBuilder;
 import org.salt.jlangchain.core.agent.memory.SlidingWindowContext;
 import org.salt.regnexe.agent.core.RegnexeAgent;
 import org.salt.regnexe.agent.core.RegnexeAgentBuilder;
+import org.salt.regnexe.agent.core.common.enums.TaskStatus;
 import org.salt.regnexe.agent.core.task.AgentResult;
 import org.salt.regnexe.agent.core.task.state.TaskRequest;
 import org.salt.regnexe.cli.config.RexConfig;
@@ -33,6 +34,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -98,11 +100,16 @@ public class CliMain implements CommandLineRunner {
     public void run(String... args) throws Exception {
         RexConfig config = RexConfig.load();
 
-        // Parse --session argument
+        // Parse --session / --resume arguments
         String sessionArg = null;
+        String resumeArg = null;
         for (int i = 0; i < args.length; i++) {
             if ("--session".equals(args[i]) && i + 1 < args.length) {
                 sessionArg = args[i + 1];
+            } else if ("--resume".equals(args[i]) && i + 1 < args.length) {
+                resumeArg = args[i + 1];
+                // --resume implies --session with the same name
+                if (sessionArg == null) sessionArg = resumeArg;
             }
         }
 
@@ -125,13 +132,28 @@ public class CliMain implements CommandLineRunner {
         RexDatabase db;
         try {
             db = new RexDatabase();
+            // On Ctrl+C / SIGTERM, mark in-flight RUNNING tasks as PAUSED so --resume works.
+            final RexDatabase dbRef = db;
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try { dbRef.markAllRunningAsPaused(); } catch (Exception ignored) {}
+                try { dbRef.close(); } catch (Exception ignored) {}
+            }, "rex-shutdown"));
         } catch (Exception e) {
             out.println("[warn] SQLite unavailable, falling back to in-memory: " + e.getMessage());
             db = null;
         }
 
+        // AtomicReference lets the pauseAction lambda always call the most recent agent instance,
+        // even after /switch rebuilds the agent.
+        AtomicReference<RegnexeAgent> agentRef = new AtomicReference<>();
+        Runnable pauseAction = () -> {
+            RegnexeAgent a = agentRef.get();
+            if (a != null) a.pause();
+        };
+
         SessionContext ctx = resolveSession(sessionArg, config, db);
-        RegnexeAgent agent = buildAgent(ctx, config, terminal, db);
+        RegnexeAgent agent = buildAgent(ctx, config, terminal, db, pauseAction);
+        agentRef.set(agent);
 
         out.printf("rex v%s  (type /help for commands, /exit to quit)%n", VERSION);
         out.printf("Model: %s/%s%n", config.getModel().getVendor(), config.effectiveModel());
@@ -144,6 +166,19 @@ public class CliMain implements CommandLineRunner {
         out.printf("Session: %s%n", ctx.getSessionName());
         out.println();
         out.flush();
+
+        // --resume: kick off the paused task immediately before entering the REPL loop
+        if (resumeArg != null) {
+            out.printf("Resuming paused task for session: %s%n%n", ctx.getSessionName());
+            out.flush();
+            try {
+                AgentResult r = agent.resume(ctx.getSessionName(), null);
+                handleAgentResult(r, ctx, out);
+            } catch (IllegalStateException e) {
+                out.println("[warn] " + e.getMessage());
+                out.flush();
+            }
+        }
 
         while (true) {
             String input;
@@ -164,23 +199,18 @@ public class CliMain implements CommandLineRunner {
                 if (result == SlashResult.EXIT) break;
                 if (result == SlashResult.AGENT_REBUILT) {
                     // ctx was mutated in-place by handleSlashCommand (/switch)
-                    agent = buildAgent(ctx, config, terminal, db);
+                    agent = buildAgent(ctx, config, terminal, db, pauseAction);
+                    agentRef.set(agent);
                 }
                 continue;
             }
 
             try {
                 TaskRequest req = new TaskRequest();
-                req.setGoal(input);
+                req.setGoal(injectWorkspacePreamble(input, ctx));
                 req.setSessionId(ctx.getSessionName());
                 AgentResult result = agent.execute(req);
-                // TASK_TOKEN_SUMMARY fires via listener just before execute() returns.
-                // Print the clean final answer after the token summary line.
-                String answer = result.getFinalText();
-                if (answer != null && !answer.isBlank()) {
-                    out.println(answer);
-                    out.flush();
-                }
+                handleAgentResult(result, ctx, out);
                 if (db != null) {
                     try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                 }
@@ -193,9 +223,8 @@ public class CliMain implements CommandLineRunner {
         out.println("Goodbye!");
         out.flush();
         terminal.close();
-        if (db != null) {
-            try { db.close(); } catch (Exception ignored) {}
-        }
+        // db.close() is handled by the shutdown hook registered above, which also marks
+        // any RUNNING tasks as PAUSED. Don't double-close here.
     }
 
     // ── Session resolution ────────────────────────────────────────────────────
@@ -228,9 +257,42 @@ public class CliMain implements CommandLineRunner {
         }
     }
 
+    // ── Result handling ───────────────────────────────────────────────────────
+
+    private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out) {
+        // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
+        // Print the clean final answer after the token summary line.
+        String answer = result.getFinalText();
+        if (answer != null && !answer.isBlank()) {
+            out.println(answer);
+        }
+        if (result.getStatus() == TaskStatus.PAUSED) {
+            out.println();
+            out.printf("  Task paused. Resume with: rex --resume %s%n", ctx.getSessionName());
+        }
+        out.flush();
+    }
+
+    // ── Goal injection ────────────────────────────────────────────────────────
+
+    /**
+     * When multiple workspace roots exist, prepend a preamble so the LLM knows where to look.
+     * Single-root sessions get no preamble — no noise.
+     */
+    private String injectWorkspacePreamble(String goal, SessionContext ctx) {
+        List<Path> roots = ctx.getWorkspace().getRoots();
+        if (roots.size() <= 1) return goal;
+        StringBuilder sb = new StringBuilder("[Workspace roots available for this task:\n");
+        sb.append(ctx.getWorkspace().describeRoots());
+        sb.append("Use these roots when resolving relative paths.]\n\n");
+        sb.append(goal);
+        return sb.toString();
+    }
+
     // ── Agent factory ────────────────────────────────────────────────────────
 
-    private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal, RexDatabase db) {
+    private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
+                                    RexDatabase db, Runnable pauseAction) {
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
         var builder = agentBuilder
@@ -246,9 +308,9 @@ public class CliMain implements CommandLineRunner {
                         FileTools.readFile(workspace),
                         FileTools.listFiles(workspace),
                         FileTools.searchFiles(workspace),
-                        FileTools.writeFile(workspace, terminal),
-                        FileTools.editFile(workspace, terminal),
-                        BashTool.bash(workspace, config.getTools().getBash(), terminal)
+                        FileTools.writeFile(workspace, terminal, pauseAction),
+                        FileTools.editFile(workspace, terminal, pauseAction),
+                        BashTool.bash(workspace, config.getTools().getBash(), terminal, pauseAction)
                 );
         if (db != null) {
             builder = builder.withSessionStorage(new SqliteConversationStorage(db));
@@ -301,11 +363,12 @@ public class CliMain implements CommandLineRunner {
                           /sessions          list all sessions
                           /switch <name>     switch to a session (creates if new)
                           /clear             clear current session's conversation history
+                          /add-dir <path>    add a workspace directory for this session
+                          /dirs              list all workspace directories
 
-                        Coming soon:
-                          /add-dir <path>    add a workspace directory
-                          /dirs              list workspace directories
-                          /pause             pause current task
+                        Pause/Resume:
+                          At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
+                          Resume a paused task by restarting with: rex --resume <session-name>
                         """);
                 out.flush();
             }
@@ -401,6 +464,31 @@ public class CliMain implements CommandLineRunner {
                     db.clearConversation(ctx.getSessionName());
                     out.printf("  Cleared conversation history for session: %s%n", ctx.getSessionName());
                 } catch (SQLException e) {
+                    out.println("  [error] " + e.getMessage());
+                }
+                out.flush();
+            }
+
+            case "/dirs" -> {
+                out.println("  Workspace directories:");
+                out.println(ctx.getWorkspace().describeRoots());
+                out.flush();
+            }
+
+            case "/add-dir" -> {
+                String pathArg = parts.length > 1 ? parts[1].trim() : "";
+                if (pathArg.isEmpty()) {
+                    out.println("  Usage: /add-dir <path>");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                try {
+                    Path newRoot = Path.of(pathArg).toAbsolutePath().normalize();
+                    ctx.getWorkspace().addRoot(newRoot);
+                    out.println("  Added workspace directory: " + newRoot);
+                    out.println("  Current roots:");
+                    out.print(ctx.getWorkspace().describeRoots());
+                } catch (IllegalArgumentException e) {
                     out.println("  [error] " + e.getMessage());
                 }
                 out.flush();

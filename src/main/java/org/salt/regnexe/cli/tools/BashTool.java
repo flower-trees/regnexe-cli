@@ -59,7 +59,8 @@ public class BashTool {
 
     public static Tool bash(WorkspaceContext workspace,
                             RexConfig.ToolsConfig.BashConfig config,
-                            Terminal terminal) {
+                            Terminal terminal,
+                            Runnable pauseAction) {
         return Tool.builder()
                 .name("bash")
                 .description(
@@ -97,12 +98,16 @@ public class BashTool {
 
                     boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
                     if (needsConfirm) {
-                        out.print("  Execute? [y/N] ");
+                        out.print("  Execute? [y/N/pause] ");
                         out.flush();
                         try {
                             String answer = readLine(terminal);
                             out.println();
                             out.flush();
+                            if ("pause".equals(answer) || "/pause".equals(answer)) {
+                                if (pauseAction != null) pauseAction.run();
+                                return "Task paused by user.";
+                            }
                             if (!answer.equals("y") && !answer.equals("yes")) return "Command cancelled by user.";
                         } catch (IOException e) {
                             return "Error reading confirmation: " + e.getMessage();

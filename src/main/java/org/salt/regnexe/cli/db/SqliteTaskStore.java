@@ -64,9 +64,11 @@ public class SqliteTaskStore implements TaskStore {
 
     @Override
     public List<TaskExecutionState> listResumable(String sessionId) {
+        // Include RUNNING tasks: these are tasks interrupted by kill -9 before the shutdown
+        // hook could mark them PAUSED. Treat them as resumable to avoid data loss.
         String sql = """
                 SELECT data FROM task_execution_states
-                WHERE session_id = ? AND status = 'PAUSED'
+                WHERE session_id = ? AND status IN ('PAUSED', 'RUNNING')
                 """;
         List<TaskExecutionState> result = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {

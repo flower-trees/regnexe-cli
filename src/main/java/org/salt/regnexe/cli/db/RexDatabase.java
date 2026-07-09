@@ -91,6 +91,25 @@ public class RexDatabase implements AutoCloseable {
         }
     }
 
+    // ── Task state helpers ───────────────────────────────────────────────────
+
+    /**
+     * On clean exit AND on Ctrl+C / SIGTERM, mark any RUNNING tasks as PAUSED so they appear
+     * in listResumable() on next startup. Without this, a process-killed task stays RUNNING
+     * forever and can never be resumed.
+     */
+    public void markAllRunningAsPaused() throws SQLException {
+        String sql = """
+                UPDATE task_execution_states
+                SET status = 'PAUSED', updated_at = ?
+                WHERE status = 'RUNNING'
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setLong(1, System.currentTimeMillis());
+            ps.execute();
+        }
+    }
+
     // ── Sessions CRUD ────────────────────────────────────────────────────────
 
     public void upsertSession(SessionRow row) throws SQLException {
