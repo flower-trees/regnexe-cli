@@ -17,5 +17,3 @@ echo "==> $INSTALL_ROOT/bin/rex --version"
 
 echo "Install smoke test passed."
 echo "Temporary install root: $INSTALL_ROOT"
-
-$INSTALL_ROOT/bin/rex

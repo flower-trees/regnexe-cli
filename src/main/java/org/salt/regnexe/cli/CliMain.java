@@ -7,11 +7,16 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.salt.jlangchain.core.history.HistoryInfos;
 import org.salt.jlangchain.core.agent.memory.SlidingWindowContext;
+import org.salt.jlangchain.core.message.BaseMessage;
+import org.salt.jlangchain.core.message.MessageType;
 import org.salt.regnexe.agent.core.RegnexeAgent;
 import org.salt.regnexe.agent.core.RegnexeAgentBuilder;
 import org.salt.regnexe.agent.core.common.enums.TaskStatus;
 import org.salt.regnexe.agent.core.task.AgentResult;
+import org.salt.regnexe.agent.core.task.state.RoundRecord;
+import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
 import org.salt.regnexe.agent.core.task.state.TaskRequest;
 import org.salt.regnexe.cli.config.RexConfig;
 import org.salt.regnexe.cli.db.RexDatabase;
@@ -34,13 +39,20 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.time.Instant;
-import java.util.concurrent.atomic.AtomicReference;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 @SpringBootApplication
 public class CliMain implements CommandLineRunner {
@@ -179,10 +191,34 @@ public class CliMain implements CommandLineRunner {
         // AtomicReference lets the pauseAction lambda always call the most recent agent instance,
         // even after /switch rebuilds the agent.
         AtomicReference<RegnexeAgent> agentRef = new AtomicReference<>();
+        AtomicBoolean executing = new AtomicBoolean(false);
+        AtomicBoolean exitRequested = new AtomicBoolean(false);
+        AtomicInteger interruptCount = new AtomicInteger(0);
+        Thread mainThread = Thread.currentThread();
         Runnable pauseAction = () -> {
             RegnexeAgent a = agentRef.get();
             if (a != null) a.pause();
         };
+        terminal.handle(Terminal.Signal.INT, signal -> {
+            if (!executing.get()) {
+                exitRequested.set(true);
+                mainThread.interrupt();
+                return;
+            }
+
+            int count = interruptCount.incrementAndGet();
+            if (count == 1) {
+                out.println();
+                out.println("  Interrupt received. Pausing current task...");
+                out.flush();
+                pauseAction.run();
+            } else {
+                out.println();
+                out.println("  Second interrupt received. Exiting.");
+                out.flush();
+                System.exit(130);
+            }
+        });
 
         SessionContext ctx = resolveSession(sessionArg, config, db);
         RegnexeAgent agent = buildAgent(ctx, config, terminal, db, pauseAction);
@@ -205,20 +241,29 @@ public class CliMain implements CommandLineRunner {
             out.printf("Resuming paused task for session: %s%n%n", ctx.getSessionName());
             out.flush();
             try {
-                AgentResult r = agent.resume(ctx.getSessionName(), null);
-                handleAgentResult(r, ctx, out);
+                RegnexeAgent resumeAgent = agent;
+                AgentResult r = runAgentTask(
+                        () -> resumeAgent.resume(ctx.getSessionName(), null),
+                        ctx,
+                        out,
+                        executing,
+                        interruptCount);
+                handleAgentResult(r, ctx, out, db);
             } catch (IllegalStateException e) {
                 out.println("[warn] " + e.getMessage());
                 out.flush();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                exitRequested.set(true);
             }
         }
 
-        while (true) {
+        while (!exitRequested.get()) {
             String input;
             try {
                 input = reader.readLine("rex [" + ctx.getSessionName() + "]> ");
             } catch (UserInterruptException e) {
-                continue;
+                break;
             } catch (EndOfFileException e) {
                 break;
             }
@@ -227,26 +272,54 @@ public class CliMain implements CommandLineRunner {
             input = input.trim();
             if (input.isEmpty()) continue;
 
+            boolean resumeRequested = false;
+            String resumeSupplement = null;
             if (input.startsWith("/")) {
-                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
-                if (result == SlashResult.EXIT) break;
-                if (result == SlashResult.AGENT_REBUILT) {
-                    // ctx was mutated in-place by handleSlashCommand (/switch)
-                    agent = buildAgent(ctx, config, terminal, db, pauseAction);
-                    agentRef.set(agent);
+                if (input.equals("/resume") || input.startsWith("/resume ")
+                        || input.equals("/continue") || input.startsWith("/continue ")) {
+                    resumeRequested = true;
+                    resumeSupplement = extractSlashArgument(input);
+                } else {
+                    SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                    if (result == SlashResult.EXIT) break;
+                    if (result == SlashResult.AGENT_REBUILT) {
+                        // ctx was mutated in-place by handleSlashCommand (/switch)
+                        agent = buildAgent(ctx, config, terminal, db, pauseAction);
+                        agentRef.set(agent);
+                    }
+                    continue;
                 }
-                continue;
             }
 
             try {
-                TaskRequest req = new TaskRequest();
-                req.setGoal(injectWorkspacePreamble(input, ctx));
-                req.setSessionId(ctx.getSessionName());
-                AgentResult result = agent.execute(req);
-                handleAgentResult(result, ctx, out);
+                AgentResult result;
+                RegnexeAgent taskAgent = agent;
+                if (resumeRequested) {
+                    String supplement = resumeSupplement;
+                    result = runAgentTask(
+                            () -> taskAgent.resume(ctx.getSessionName(), supplement),
+                            ctx,
+                            out,
+                            executing,
+                            interruptCount);
+                } else {
+                    TaskRequest req = new TaskRequest();
+                    req.setGoal(injectWorkspacePreamble(input, ctx));
+                    req.setSessionId(ctx.getSessionName());
+                    result = runAgentTask(
+                            () -> taskAgent.execute(req),
+                            ctx,
+                            out,
+                            executing,
+                            interruptCount);
+                }
+                handleAgentResult(result, ctx, out, db);
                 if (db != null) {
                     try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             } catch (Exception e) {
                 out.println("  [error] " + e.getMessage());
                 out.flush();
@@ -258,6 +331,38 @@ public class CliMain implements CommandLineRunner {
         terminal.close();
         // db.close() is handled by the shutdown hook registered above, which also marks
         // any RUNNING tasks as PAUSED. Don't double-close here.
+    }
+
+    private AgentResult runAgentTask(Callable<AgentResult> task,
+                                     SessionContext ctx,
+                                     PrintWriter out,
+                                     AtomicBoolean executing,
+                                     AtomicInteger interruptCount) throws Exception {
+        ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "rex-agent-worker");
+            t.setDaemon(true);
+            return t;
+        });
+        executing.set(true);
+        interruptCount.set(0);
+        Future<AgentResult> future = executor.submit(task);
+        try {
+            return future.get();
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof Exception ex) throw ex;
+            if (cause instanceof Error err) throw err;
+            throw new RuntimeException(cause);
+        } finally {
+            executing.set(false);
+            interruptCount.set(0);
+            executor.shutdown();
+        }
+    }
+
+    private String extractSlashArgument(String input) {
+        String[] parts = input.split("\\s+", 2);
+        return parts.length > 1 && !parts[1].isBlank() ? parts[1].trim() : null;
     }
 
     // ── Session resolution ────────────────────────────────────────────────────
@@ -292,7 +397,7 @@ public class CliMain implements CommandLineRunner {
 
     // ── Result handling ───────────────────────────────────────────────────────
 
-    private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out) {
+    private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out, RexDatabase db) {
         // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
         // Print the clean final answer after the token summary line.
         String answer = result.getFinalText();
@@ -300,10 +405,66 @@ public class CliMain implements CommandLineRunner {
             out.println(answer);
         }
         if (result.getStatus() == TaskStatus.PAUSED) {
+            storePausedTaskSummary(result, db);
             out.println();
-            out.printf("  Task paused. Resume with: rex --resume %s%n", ctx.getSessionName());
+            out.printf("  Task paused. Resume with: /resume or rex --resume %s%n", ctx.getSessionName());
         }
         out.flush();
+    }
+
+    private void storePausedTaskSummary(AgentResult result, RexDatabase db) {
+        if (db == null || result.getState() == null || result.getState().getRequest() == null) return;
+
+        TaskExecutionState state = result.getState();
+        TaskRequest request = state.getRequest();
+        String goal = request.getDisplayGoal();
+        if (goal == null || goal.isBlank()) goal = request.getGoal();
+        if (goal == null || goal.isBlank()) return;
+
+        StringBuilder summary = new StringBuilder();
+        summary.append("[Task paused]\n");
+        summary.append("Task id: ").append(state.getTaskId()).append("\n");
+        summary.append("Original request: ").append(goal).append("\n");
+        summary.append("Current round: ").append(state.getCurrentRound())
+                .append(" of ").append(state.getMaxRounds()).append("\n");
+        String partial = latestExecutionText(state);
+        if (partial != null && !partial.isBlank()) {
+            summary.append("Partial result: ").append(truncate(partial, 800)).append("\n");
+        }
+        summary.append("Use /resume to continue this paused task.");
+
+        HistoryInfos turn = HistoryInfos.builder()
+                .type(HistoryInfos.Type.NORMAL)
+                .messages(List.of(
+                        BaseMessage.fromMessage(MessageType.HUMAN.getCode(), goal),
+                        BaseMessage.fromMessage(MessageType.AI.getCode(), summary.toString())
+                ))
+                .build();
+        try {
+            long sessionKey = (long) state.getSessionId().hashCode();
+            new SqliteConversationStorage(db).append(0L, 0L, sessionKey, turn);
+        } catch (Exception ignored) {
+            // Paused task persistence lives in task_store; session summary is best-effort context.
+        }
+    }
+
+    private String latestExecutionText(TaskExecutionState state) {
+        List<RoundRecord> rounds = state.getRounds();
+        if (rounds == null) return null;
+        for (int i = rounds.size() - 1; i >= 0; i--) {
+            RoundRecord round = rounds.get(i);
+            if (round.getExecutionResult() == null) continue;
+            String text = round.getExecutionResult().getFinalText();
+            if (text != null && !text.isBlank()) return text;
+            text = round.getExecutionResult().getPartialContext();
+            if (text != null && !text.isBlank()) return text;
+        }
+        return state.getLastToolResult();
+    }
+
+    private String truncate(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) return text;
+        return text.substring(0, maxChars) + "...";
     }
 
     // ── Goal injection ────────────────────────────────────────────────────────
@@ -398,9 +559,11 @@ public class CliMain implements CommandLineRunner {
                           /clear             clear current session's conversation history
                           /add-dir <path>    add a workspace directory for this session
                           /dirs              list all workspace directories
+                          /resume            resume the latest paused task in this session
 
                         Pause/Resume:
                           At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
+                          After Ctrl+C pauses a task, type /resume to resume it.
                           Resume a paused task by restarting with: rex --resume <session-name>
                         """);
                 out.flush();

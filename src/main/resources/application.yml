@@ -21,5 +21,8 @@ logging:
     # - CapabilityExecutor: warns when planner hallucinates a capability ID that
     #   doesn't exist (common with empty tool registry; execution falls back to LLM)
     # - TaskPlanner: warns on occasional LLM JSON parse hiccups (auto-repaired)
+    org.salt.regnexe.agent.core: ERROR
     org.salt.regnexe.agent.core.task.worker: ERROR
+    org.salt.regnexe.agent.core.RegnexeAgent: ERROR
     org.salt.jlangchain: ERROR
+    org.salt.function.flow.context.ContextBus: ERROR
