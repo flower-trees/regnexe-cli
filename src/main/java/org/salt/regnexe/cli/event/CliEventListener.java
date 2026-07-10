@@ -113,12 +113,14 @@ public class CliEventListener extends AbstractEventListener {
             // JsonUtil serializes with SNAKE_CASE; Long fields are serialized as strings
             long prompt     = total.path("prompt_tokens").asLong();
             long completion = total.path("completion_tokens").asLong();
+            long cached     = total.path("cached_tokens").asLong();
             long toolCalls  = total.path("tool_calls").asLong();
             long elapsedMs  = root.path("elapsed_ms").asLong();  // LongNode (number)
             long llmMs      = root.path("llm_ms").asLong();      // LongNode (number)
+            String cachePart = cached > 0 ? String.format(" · cache hit %d", cached) : "";
             return String.format(
-                    "Tokens: %d in / %d out  tool calls: %d  %.1fs (LLM %.1fs)",
-                    prompt, completion, toolCalls, elapsedMs / 1000.0, llmMs / 1000.0);
+                    "Tokens: %d in -> %d out%s · tools %d · %.1fs (LLM %.1fs)",
+                    prompt, completion, cachePart, toolCalls, elapsedMs / 1000.0, llmMs / 1000.0);
         } catch (Exception e) {
             return json;
         }

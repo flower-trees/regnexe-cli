@@ -34,7 +34,7 @@ public class RexConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ModelConfig {
         private String vendor = "deepseek";
-        private String name = "deepseek-v4-flash";
+        private String name = "deepseek-v4-pro";
         private String apiKey;
     }
 
