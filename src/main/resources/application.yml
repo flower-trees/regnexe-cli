@@ -5,6 +5,15 @@ spring:
     web-application-type: none
     banner-mode: off
 
+models:
+  http:
+    # Plan/Reflect/Execute LLM calls are synchronous (non-streaming): the client blocks
+    # until the full completion is returned. Larger prompts (session history, capability
+    # descriptions) can take longer than the 60s default, especially against a busy vendor
+    # API, which surfaces as SocketTimeoutException. 150s gives real headroom without
+    # exceeding the 300s callTimeout cap.
+    read-timeout-ms: 150000
+
 logging:
   level:
     root: WARN
