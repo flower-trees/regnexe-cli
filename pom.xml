@@ -83,6 +83,7 @@
   </dependencies>
 
   <build>
+    <finalName>regnexe-cli</finalName>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
@@ -102,6 +103,13 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>repackage</goal>
+            </goals>
+          </execution>
+        </executions>
         <configuration>
           <mainClass>org.salt.regnexe.cli.CliMain</mainClass>
           <excludes>

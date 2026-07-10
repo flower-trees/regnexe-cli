@@ -53,6 +53,15 @@ public class CliMain implements CommandLineRunner {
     private RegnexeAgentBuilder agentBuilder;
 
     public static void main(String[] args) {
+        if (hasArg(args, "--help") || hasArg(args, "-h")) {
+            printUsage();
+            return;
+        }
+        if (hasArg(args, "--version") || hasArg(args, "-v")) {
+            System.out.println("rex v" + VERSION);
+            return;
+        }
+
         // Wire api_key from config → Spring @Value before context starts.
         RexConfig preConfig = RexConfig.load();
         String apiKey = preConfig.effectiveApiKey();
@@ -66,6 +75,30 @@ public class CliMain implements CommandLineRunner {
         SpringApplication app = new SpringApplication(CliMain.class);
         app.setWebApplicationType(WebApplicationType.NONE);
         app.run(args);
+    }
+
+    private static boolean hasArg(String[] args, String expected) {
+        for (String arg : args) {
+            if (expected.equals(arg)) return true;
+        }
+        return false;
+    }
+
+    private static void printUsage() {
+        System.out.printf("""
+                rex v%s
+
+                Usage:
+                  rex [--session <name>]
+                  rex --resume <session-id>
+                  rex --help
+                  rex --version
+
+                Environment:
+                  REX_API_KEY   API key override for the configured model vendor
+                  REX_MODEL     model name override
+                  JAVA_OPTS     JVM options used by the installed wrapper
+                """, VERSION);
     }
 
     /** Maps vendor name → j-langchain Spring property key for API key injection. */

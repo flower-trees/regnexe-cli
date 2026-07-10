@@ -122,13 +122,30 @@ cd ../regnexe-cli && mvn -q -o compile
 
 按优先级：
 
-1. **Step 11：打包与安装脚本**（`docs/design/design.md` 最后一步，完全没开始）——`pom.xml` 加 `spring-boot-maven-plugin` repackage、写 `install.sh`、`rex` wrapper 脚本。设计文档里有验证步骤可以直接抄。
+1. ~~**Step 11：打包与安装脚本**（`docs/design/design.md` 最后一步，完全没开始）——`pom.xml` 加 `spring-boot-maven-plugin` repackage、写 `install.sh`、`rex` wrapper 脚本。设计文档里有验证步骤可以直接抄。~~ 已完成，见第 6 节。
 2. **验证 2.3 节的优化效果**（见"已知问题"第一条）——找真实任务跑一遍，量化 Plan 阶段延迟变化。
 3. **`ModelSpec.modelKwargs` 断链问题**——如果要支持切换 Plan/Reflect 用更小更快的模型（本 session 讨论过、评估为"值得做但成本较高"的优化项），需要先把这条链路接上：`DefaultModelProvider` 把 kwargs 传给 vendor builder，各 vendor 的 `otherInformation()` 消费它。
 4. **给 Plan/Reflect 配独立（更快/更便宜）模型**——`RegnexeAgentBuilder` 目前只有一个全局 `defaultModel`，Search/Plan/Execute/Reflect 四个角色共用。这是讨论过但判定为"比前几项成本高一档"、故意没做的优化，需要给 `ContextBusKeys` 加类似 `PLANNER_MODEL` 的 override 通道。
 5. **Coze（`ChatCoze`）的 `withJsonMode()` 保持 no-op**，除非未来 Coze API 真的加了等价能力，否则不需要动。
 
-## 6. 给下一个 AI 的建议
+## 6. Step 11 追加记录：打包与安装脚本
+
+继续开发时已补完 `docs/design/design.md` Step 11：
+
+- `pom.xml`：设置 `<finalName>regnexe-cli</finalName>`，并把 `spring-boot-maven-plugin` 的 `repackage` goal 绑定到 package 生命周期，产物固定为 `target/regnexe-cli.jar`。
+- `install.sh`：新增安装脚本，默认把 JAR 安装到 `/opt/regnexe/regnexe-cli.jar`，把 wrapper 写到 `/usr/local/bin/rex`；支持 `SOURCE_JAR`、`INSTALL_DIR`、`BIN_DIR`、`BIN_NAME` 环境变量覆盖，方便无 sudo smoke test。
+- `scripts/smoke-test.sh`：新增安装 smoke test，串起 Maven package、临时目录安装、wrapper version 验证。
+- `CliMain.java`：新增早期 `--help`/`-h`、`--version`/`-v` 处理，避免 `java -jar target/regnexe-cli.jar --help` 初始化 Spring 或进入 REPL。
+
+已验证：
+
+```bash
+scripts/smoke-test.sh
+```
+
+没有执行默认 `/opt/regnexe` + `/usr/local/bin` 的真实全局安装，避免在开发机上写系统目录；脚本默认路径仍按设计文档保留。
+
+## 7. 给下一个 AI 的建议
 
 - 改 `regnexe-agent` 或 `j-langchain` 之后，**一定要按第 0 节的顺序 `mvn install`**，否则 `regnexe-cli` 用的是本地仓库缓存的旧版本，改了等于没改，还会误判"这个 bug 还在"。
 - 三个仓库目前都在 `master` 分支直接提交，没有走 PR review 流程；改动前后建议自己跑一下 `mvn -q -o compile`（三个仓库都要过）。
