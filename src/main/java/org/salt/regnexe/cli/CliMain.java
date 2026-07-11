@@ -521,6 +521,8 @@ public class CliMain implements CommandLineRunner {
                         FileTools.searchFiles(workspace),
                         FileTools.writeFile(workspace, terminal, pauseAction),
                         FileTools.editFile(workspace, terminal, pauseAction),
+                        BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
+                );
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, pauseAction)
                 )
                 // Project marketplaces first, then user marketplaces, then configured extra_dirs,

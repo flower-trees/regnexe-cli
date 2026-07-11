@@ -11,6 +11,8 @@ public interface CliRenderer {
     void executing();
     void toolCalled(String text);
     void toolResult(String text);
+    void bashCommand(String command);
+    void bashConfirmPrompt();
     void tokenSummary(String json);
     void interruptPausing();
     void secondInterrupt();

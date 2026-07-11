@@ -91,11 +91,12 @@ public class TerminalCliRenderer implements CliRenderer {
     @Override
     public void toolCalled(String text) {
         clearThinkingLine();
+        String display = simplifyToolText(text);
         if (theme.theme() == CliTheme.CODEX) {
             out.println();
-            out.println("┌ " + text);
+            out.println("┌ " + display);
         } else {
-            out.println("\n  ▶ " + text);
+            out.println("\n  ▶ " + display);
         }
         out.flush();
     }
@@ -108,6 +109,24 @@ public class TerminalCliRenderer implements CliRenderer {
         } else {
             out.println("  ◀ " + value);
         }
+        out.flush();
+    }
+
+    @Override
+    public void bashCommand(String command) {
+        if (theme.theme() == CliTheme.CODEX) {
+            out.println("│ $ " + command);
+        } else {
+            out.println();
+            out.println("  $ " + command);
+            out.println("  " + "─".repeat(50));
+        }
+        out.flush();
+    }
+
+    @Override
+    public void bashConfirmPrompt() {
+        out.print(theme.theme() == CliTheme.CODEX ? "│ run? [y/N/pause] " : "  Execute? [y/N/pause] ");
         out.flush();
     }
 
@@ -204,6 +223,17 @@ public class TerminalCliRenderer implements CliRenderer {
         if (text == null) return "";
         String t = text.trim();
         return t.length() <= max ? t : t.substring(0, max) + "...";
+    }
+
+    private String simplifyToolText(String text) {
+        if (text == null) return "";
+        String t = text.trim();
+        if (t.startsWith("mcp_tool:bash")) return "bash";
+        if (t.startsWith("mcp_tool:")) {
+            int space = t.indexOf(' ');
+            return space > 0 ? t.substring("mcp_tool:".length(), space) : t.substring("mcp_tool:".length());
+        }
+        return t;
     }
 
     private String dim(String text) {

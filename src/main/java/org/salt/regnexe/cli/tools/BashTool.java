@@ -3,6 +3,7 @@ package org.salt.regnexe.cli.tools;
 import org.jline.terminal.Terminal;
 import org.salt.jlangchain.rag.tools.Tool;
 import org.salt.regnexe.cli.config.RexConfig;
+import org.salt.regnexe.cli.ui.CliRenderer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -60,6 +61,7 @@ public class BashTool {
     public static Tool bash(WorkspaceContext workspace,
                             RexConfig.ToolsConfig.BashConfig config,
                             Terminal terminal,
+                            CliRenderer renderer,
                             Runnable pauseAction) {
         return Tool.builder()
                 .name("bash")
@@ -92,14 +94,11 @@ public class BashTool {
                     }
 
                     PrintWriter out = terminal.writer();
-                    out.println();
-                    out.println("  $ " + command);
-                    out.println("  " + "─".repeat(50));
+                    renderer.bashCommand(command);
 
                     boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
                     if (needsConfirm) {
-                        out.print("  Execute? [y/N/pause] ");
-                        out.flush();
+                        renderer.bashConfirmPrompt();
                         try {
                             String answer = readLine(terminal);
                             out.println();
