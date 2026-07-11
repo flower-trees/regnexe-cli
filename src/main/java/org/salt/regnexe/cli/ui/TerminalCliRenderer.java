@@ -576,6 +576,17 @@ public class TerminalCliRenderer implements CliRenderer {
         };
     }
 
+    private String simplifyToolText(String text) {
+        if (text == null) return "";
+        String t = text.trim();
+        if (t.startsWith("mcp_tool:bash")) return "bash";
+        if (t.startsWith("mcp_tool:")) {
+            int space = t.indexOf(' ');
+            return space > 0 ? t.substring("mcp_tool:".length(), space) : t.substring("mcp_tool:".length());
+        }
+        return t;
+    }
+
     private String dim(String text) {
         return theme.colorEnabled() ? Ansi.DIM + text + Ansi.RESET : text;
     }
