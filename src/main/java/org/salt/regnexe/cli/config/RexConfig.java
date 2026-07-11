@@ -29,6 +29,7 @@ public class RexConfig {
     private AgentConfig agent = new AgentConfig();
     private ToolsConfig tools = new ToolsConfig();
     private WorkspaceConfig workspace = new WorkspaceConfig();
+    private UiConfig ui = new UiConfig();
     private SkillsConfig skills = new SkillsConfig();
 
     @Data
@@ -53,6 +54,15 @@ public class RexConfig {
     public static class WorkspaceConfig {
         /** Root directories the agent is allowed to read. Defaults to the current working directory. */
         private List<String> dirs = new ArrayList<>();
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class UiConfig {
+        private String theme = "codex";
+        private String color = "auto";
+        private boolean icons = true;
+        private boolean compact = true;
     }
 
     @Data

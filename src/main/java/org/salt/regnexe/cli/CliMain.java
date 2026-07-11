@@ -31,6 +31,9 @@ import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
 import org.salt.regnexe.cli.tools.FileTools;
 import org.salt.regnexe.cli.tools.WorkspaceContext;
+import org.salt.regnexe.cli.ui.CliRenderer;
+import org.salt.regnexe.cli.ui.TerminalCliRenderer;
+import org.salt.regnexe.cli.ui.ThemeConfig;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -177,8 +180,10 @@ public class CliMain implements CommandLineRunner {
                 .build();
 
         PrintWriter out = terminal.writer();
+        CliRenderer renderer = new TerminalCliRenderer(terminal, ThemeConfig.from(config.getUi(), terminal));
 
         RexDatabase db;
+        String dbWarning = null;
         try {
             db = new RexDatabase();
             // On Ctrl+C / SIGTERM, mark in-flight RUNNING tasks as PAUSED so --resume works.
@@ -188,7 +193,7 @@ public class CliMain implements CommandLineRunner {
                 try { dbRef.close(); } catch (Exception ignored) {}
             }, "rex-shutdown"));
         } catch (Exception e) {
-            out.println("[warn] SQLite unavailable, falling back to in-memory: " + e.getMessage());
+            dbWarning = "SQLite unavailable, falling back to in-memory: " + e.getMessage();
             db = null;
         }
 
@@ -212,33 +217,23 @@ public class CliMain implements CommandLineRunner {
 
             int count = interruptCount.incrementAndGet();
             if (count == 1) {
-                out.println();
-                out.println("  Interrupt received. Pausing current task...");
-                out.flush();
+                renderer.interruptPausing();
                 pauseAction.run();
             } else {
-                out.println();
-                out.println("  Second interrupt received. Exiting.");
-                out.flush();
+                renderer.secondInterrupt();
                 System.exit(130);
             }
         });
 
         SessionContext ctx = resolveSession(sessionArg, config, db);
-        RegnexeAgent agent = buildAgent(ctx, config, terminal, db, pauseAction);
+        RegnexeAgent agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
         agentRef.set(agent);
 
-        out.printf("rex v%s  (type /help for commands, /exit to quit)%n", VERSION);
-        out.printf("Model: %s/%s%n", config.getModel().getVendor(), config.effectiveModel());
         String apiKey = config.effectiveApiKey();
-        if (apiKey == null || apiKey.isBlank()) {
-            String envVar = vendorKeyEnvName(config.getModel().getVendor());
-            out.printf("[warn] No API key — set %s or api_key in ~/.rex/config.yml%n", envVar);
-        }
-        ctx.getWorkspace().getRoots().forEach(r -> out.printf("Workspace: %s%n", r));
-        out.printf("Session: %s%n", ctx.getSessionName());
-        out.println();
-        out.flush();
+        String missingApiKeyEnv = (apiKey == null || apiKey.isBlank())
+                ? vendorKeyEnvName(config.getModel().getVendor()) : null;
+        renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
+        if (dbWarning != null) renderer.warning(dbWarning);
 
         // --resume: kick off the paused task immediately before entering the REPL loop
         if (resumeArg != null) {
@@ -252,10 +247,9 @@ public class CliMain implements CommandLineRunner {
                         out,
                         executing,
                         interruptCount);
-                handleAgentResult(r, ctx, out, db);
+                handleAgentResult(r, ctx, out, renderer, db);
             } catch (IllegalStateException e) {
-                out.println("[warn] " + e.getMessage());
-                out.flush();
+                renderer.warning(e.getMessage());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 exitRequested.set(true);
@@ -265,7 +259,7 @@ public class CliMain implements CommandLineRunner {
         while (!exitRequested.get()) {
             String input;
             try {
-                input = reader.readLine("rex [" + ctx.getSessionName() + "]> ");
+                input = reader.readLine(renderer.prompt(ctx));
             } catch (UserInterruptException e) {
                 break;
             } catch (EndOfFileException e) {
@@ -288,7 +282,7 @@ public class CliMain implements CommandLineRunner {
                     if (result == SlashResult.EXIT) break;
                     if (result == SlashResult.AGENT_REBUILT) {
                         // ctx was mutated in-place by handleSlashCommand (/switch)
-                        agent = buildAgent(ctx, config, terminal, db, pauseAction);
+                        agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
                         agentRef.set(agent);
                     } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
                         RegnexeAgent taskAgent = agent;
@@ -337,7 +331,7 @@ public class CliMain implements CommandLineRunner {
                             executing,
                             interruptCount);
                 }
-                handleAgentResult(result, ctx, out, db);
+                handleAgentResult(result, ctx, out, renderer, db);
                 if (db != null) {
                     try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                 }
@@ -345,13 +339,11 @@ public class CliMain implements CommandLineRunner {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                out.println("  [error] " + e.getMessage());
-                out.flush();
+                renderer.error(e.getMessage());
             }
         }
 
-        out.println("Goodbye!");
-        out.flush();
+        renderer.goodbye();
         terminal.close();
         // db.close() is handled by the shutdown hook registered above, which also marks
         // any RUNNING tasks as PAUSED. Don't double-close here.
@@ -421,7 +413,8 @@ public class CliMain implements CommandLineRunner {
 
     // ── Result handling ───────────────────────────────────────────────────────
 
-    private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out, RexDatabase db) {
+    private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out,
+                                   CliRenderer renderer, RexDatabase db) {
         // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
         // Print the clean final answer after the token summary line.
         String answer = result.getFinalText();
@@ -430,8 +423,7 @@ public class CliMain implements CommandLineRunner {
         }
         if (result.getStatus() == TaskStatus.PAUSED) {
             storePausedTaskSummary(result, db);
-            out.println();
-            out.printf("  Task paused. Resume with: /resume or rex --resume %s%n", ctx.getSessionName());
+            renderer.paused(ctx.getSessionName());
         }
         out.flush();
     }
@@ -510,12 +502,13 @@ public class CliMain implements CommandLineRunner {
     // ── Agent factory ────────────────────────────────────────────────────────
 
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
+                                    CliRenderer renderer,
                                     RexDatabase db, Runnable pauseAction) {
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
         var builder = agentBuilder
                 .withDefaultModel(config.getModel().getVendor(), config.effectiveModel())
-                .withEventListener(new CliEventListener(terminal))
+                .withEventListener(new CliEventListener(renderer))
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
                 .withSessionBufferSize(ac.getSessionBufferSize())

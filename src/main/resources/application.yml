@@ -26,3 +26,4 @@ logging:
     org.salt.regnexe.agent.core.RegnexeAgent: ERROR
     org.salt.jlangchain: ERROR
     org.salt.function.flow.context.ContextBus: ERROR
+    org.jline: ERROR
