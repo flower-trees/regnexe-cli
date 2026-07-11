@@ -546,7 +546,7 @@ public class CliMain implements CommandLineRunner {
 
     private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out,
                                    CliRenderer renderer, RexDatabase db) {
-        // TASK_TOKEN_SUMMARY fires via listener just before execute() returns.
+        // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
         // Print the clean final answer after the token summary line.
         String answer = result.getFinalText();
         if (answer != null && !answer.isBlank()) {
