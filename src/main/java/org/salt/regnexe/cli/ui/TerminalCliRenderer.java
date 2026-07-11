@@ -2,10 +2,12 @@ package org.salt.regnexe.cli.ui;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jline.terminal.Attributes;
 import org.jline.terminal.Terminal;
 import org.salt.regnexe.cli.config.RexConfig;
 import org.salt.regnexe.cli.session.SessionContext;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.util.List;
@@ -15,11 +17,13 @@ public class TerminalCliRenderer implements CliRenderer {
     private static final int MAX_TOOL_RESULT_CHARS = 300;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    private final Terminal terminal;
     private final PrintWriter out;
     private final ThemeConfig theme;
     private boolean thinkingLineActive = false;
 
     public TerminalCliRenderer(Terminal terminal, ThemeConfig theme) {
+        this.terminal = terminal;
         this.out = terminal.writer();
         this.theme = theme;
     }
@@ -125,9 +129,76 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
-    public void bashConfirmPrompt() {
-        out.print(theme.theme() == CliTheme.CODEX ? "│ run? [y/N/pause] " : "  Execute? [y/N/pause] ");
-        out.flush();
+    public ConfirmChoice confirmRun() {
+        if (theme.theme() != CliTheme.CODEX) {
+            return confirmLine();
+        }
+        Attributes original = terminal.enterRawMode();
+        try {
+            return confirmRunMenu();
+        } finally {
+            terminal.setAttributes(original);
+        }
+    }
+
+    private ConfirmChoice confirmRunMenu() {
+        ConfirmChoice[] choices = {ConfirmChoice.NO, ConfirmChoice.YES, ConfirmChoice.PAUSE};
+        String[] labels = {"no", "yes", "pause"};
+        int selected = 0;
+        out.println("│ run?");
+        renderChoices(labels, selected);
+        while (true) {
+            int ch = readChar();
+            if (ch == -1 || ch == '\n' || ch == '\r') {
+                clearChoices(labels.length);
+                out.println("│ " + labels[selected]);
+                out.flush();
+                return choices[selected];
+            }
+            if (ch == 3) {
+                clearChoices(labels.length);
+                out.println("│ pause");
+                out.flush();
+                return ConfirmChoice.PAUSE;
+            }
+            if (ch == 27) {
+                int next1 = readChar();
+                int next2 = readChar();
+                if (next1 == '[' && next2 == 'A') {
+                    selected = (selected + choices.length - 1) % choices.length;
+                    renderChoices(labels, selected);
+                    continue;
+                }
+                if (next1 == '[' && next2 == 'B') {
+                    selected = (selected + 1) % choices.length;
+                    renderChoices(labels, selected);
+                    continue;
+                }
+                clearChoices(labels.length);
+                out.println("│ no");
+                out.flush();
+                return ConfirmChoice.NO;
+            }
+            char c = Character.toLowerCase((char) ch);
+            if (c == 'y') {
+                clearChoices(labels.length);
+                out.println("│ yes");
+                out.flush();
+                return ConfirmChoice.YES;
+            }
+            if (c == 'n') {
+                clearChoices(labels.length);
+                out.println("│ no");
+                out.flush();
+                return ConfirmChoice.NO;
+            }
+            if (c == 'p') {
+                clearChoices(labels.length);
+                out.println("│ pause");
+                out.flush();
+                return ConfirmChoice.PAUSE;
+            }
+        }
     }
 
     @Override
@@ -192,6 +263,55 @@ public class TerminalCliRenderer implements CliRenderer {
             out.print("\r" + " ".repeat(24) + "\r");
             out.flush();
             thinkingLineActive = false;
+        }
+    }
+
+    private ConfirmChoice confirmLine() {
+        out.print("  Execute? [y/N/pause] ");
+        out.flush();
+        String answer = readLine().trim().toLowerCase();
+        out.println();
+        out.flush();
+        if (answer.equals("y") || answer.equals("yes")) return ConfirmChoice.YES;
+        if (answer.equals("pause") || answer.equals("/pause") || answer.equals("p")) return ConfirmChoice.PAUSE;
+        return ConfirmChoice.NO;
+    }
+
+    private void renderChoices(String[] labels, int selected) {
+        out.print("\r");
+        for (int i = 0; i < labels.length; i++) {
+            out.print("│ " + (i == selected ? "> " : "  ") + labels[i]);
+            out.print("\n");
+        }
+        out.print("\033[" + labels.length + "A");
+        out.flush();
+    }
+
+    private void clearChoices(int lines) {
+        out.print("\r");
+        for (int i = 0; i < lines; i++) {
+            out.print("\033[2K");
+            if (i < lines - 1) out.print("\033[1B");
+        }
+        out.print("\033[" + Math.max(0, lines - 1) + "A");
+        out.print("\r");
+        out.flush();
+    }
+
+    private String readLine() {
+        StringBuilder sb = new StringBuilder();
+        int ch;
+        while ((ch = readChar()) != -1 && ch != '\n' && ch != '\r') {
+            sb.append((char) ch);
+        }
+        return sb.toString();
+    }
+
+    private int readChar() {
+        try {
+            return terminal.reader().read();
+        } catch (IOException e) {
+            return -1;
         }
     }
 

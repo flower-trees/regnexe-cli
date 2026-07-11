@@ -3,6 +3,7 @@ package org.salt.regnexe.cli.tools;
 import org.jline.terminal.Terminal;
 import org.salt.jlangchain.rag.tools.Tool;
 import org.salt.regnexe.cli.config.RexConfig;
+import org.salt.regnexe.cli.ui.ConfirmChoice;
 import org.salt.regnexe.cli.ui.CliRenderer;
 
 import java.io.IOException;
@@ -98,19 +99,12 @@ public class BashTool {
 
                     boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
                     if (needsConfirm) {
-                        renderer.bashConfirmPrompt();
-                        try {
-                            String answer = readLine(terminal);
-                            out.println();
-                            out.flush();
-                            if ("pause".equals(answer) || "/pause".equals(answer)) {
-                                if (pauseAction != null) pauseAction.run();
-                                return "Task paused by user.";
-                            }
-                            if (!answer.equals("y") && !answer.equals("yes")) return "Command cancelled by user.";
-                        } catch (IOException e) {
-                            return "Error reading confirmation: " + e.getMessage();
+                        ConfirmChoice choice = renderer.confirmRun();
+                        if (choice == ConfirmChoice.PAUSE) {
+                            if (pauseAction != null) pauseAction.run();
+                            return "Task paused by user.";
                         }
+                        if (choice != ConfirmChoice.YES) return "Command cancelled by user.";
                     } else {
                         out.flush();
                     }
@@ -166,15 +160,6 @@ public class BashTool {
                     }
                 })
                 .build();
-    }
-
-    private static String readLine(Terminal terminal) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        int ch;
-        while ((ch = terminal.reader().read()) != -1 && ch != '\n' && ch != '\r') {
-            sb.append((char) ch);
-        }
-        return sb.toString().trim().toLowerCase();
     }
 
     private static boolean isReadOnly(String command) {

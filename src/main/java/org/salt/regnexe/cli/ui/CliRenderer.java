@@ -12,7 +12,7 @@ public interface CliRenderer {
     void toolCalled(String text);
     void toolResult(String text);
     void bashCommand(String command);
-    void bashConfirmPrompt();
+    ConfirmChoice confirmRun();
     void tokenSummary(String json);
     void interruptPausing();
     void secondInterrupt();
