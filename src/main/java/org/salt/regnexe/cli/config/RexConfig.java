@@ -29,6 +29,7 @@ public class RexConfig {
     private AgentConfig agent = new AgentConfig();
     private ToolsConfig tools = new ToolsConfig();
     private WorkspaceConfig workspace = new WorkspaceConfig();
+    private SkillsConfig skills = new SkillsConfig();
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -52,6 +53,20 @@ public class RexConfig {
     public static class WorkspaceConfig {
         /** Root directories the agent is allowed to read. Defaults to the current working directory. */
         private List<String> dirs = new ArrayList<>();
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SkillsConfig {
+        /**
+         * Extra plugin-root directories to scan for skills, beyond the auto-discovered
+         * {@code .rex/marketplaces/*&#47;plugins} (project) and {@code ~/.rex/marketplaces/*&#47;plugins}
+         * (user). Each entry must directly contain plugin subfolders — same shape
+         * DefaultPluginManager.addDirectory() expects (e.g. you can point this straight at
+         * an existing Claude Code marketplace's {@code plugins/} folder without copying it).
+         * {@code ~} is expanded to the user's home directory.
+         */
+        private List<String> extraDirs = new ArrayList<>();
     }
 
     @Data

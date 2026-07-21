@@ -13,7 +13,10 @@ import org.salt.jlangchain.core.message.BaseMessage;
 import org.salt.jlangchain.core.message.MessageType;
 import org.salt.regnexe.agent.core.RegnexeAgent;
 import org.salt.regnexe.agent.core.RegnexeAgentBuilder;
+import org.salt.regnexe.agent.core.common.enums.CapabilityType;
 import org.salt.regnexe.agent.core.common.enums.TaskStatus;
+import org.salt.regnexe.agent.core.market.plugin.CapabilityDescriptor;
+import org.salt.regnexe.agent.core.market.plugin.PluginDescriptor;
 import org.salt.regnexe.agent.core.task.AgentResult;
 import org.salt.regnexe.agent.core.task.state.RoundRecord;
 import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
@@ -34,6 +37,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -286,6 +290,26 @@ public class CliMain implements CommandLineRunner {
                         // ctx was mutated in-place by handleSlashCommand (/switch)
                         agent = buildAgent(ctx, config, terminal, db, pauseAction);
                         agentRef.set(agent);
+                    } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                        RegnexeAgent taskAgent = agent;
+                        String capId = result.capabilityId;
+                        String skillArgs = result.args;
+                        String displayGoal = result.rawInput;
+                        try {
+                            AgentResult skillResult = runAgentTask(
+                                    () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
+                                    ctx, out, executing, interruptCount);
+                            handleAgentResult(skillResult, ctx, out, db);
+                            if (db != null) {
+                                try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        } catch (Exception e) {
+                            out.println("  [error] " + e.getMessage());
+                            out.flush();
+                        }
                     }
                     continue;
                 }
@@ -505,12 +529,68 @@ public class CliMain implements CommandLineRunner {
                         FileTools.writeFile(workspace, terminal, pauseAction),
                         FileTools.editFile(workspace, terminal, pauseAction),
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, pauseAction)
-                );
+                )
+                // Project marketplaces first, then user marketplaces, then configured extra_dirs,
+                // so earlier entries win on an identically-named plugin (DefaultPluginManager
+                // degrades pluginId collisions to a skip-with-warning in scan order — see
+                // docs/design/skill-slash-invocation.md).
+                .withDirectory(resolveSkillDirectories(workspace, config).toArray(new String[0]))
+                // Claude-compatible mode's scoped filesystem tools (create_directory/write_file/
+                // read_file/list_directory/file_exists) get this as their sandbox root, instead of
+                // an anonymous throwaway temp dir — so a skill-authoring skill (skill-creator) can
+                // see and edit skills that already exist here, and anything it creates lands where
+                // /skills will actually find it. Scoped to the plugins dir specifically (not the
+                // whole project) so a claude-compat skill never gets read/write access to source
+                // code, .git, .env, etc. — only to skill/plugin content.
+                .withClaudeCompatWorkspace(workspace.primaryRoot().resolve(".rex/marketplaces/default/plugins"));
         if (db != null) {
             builder = builder.withSessionStorage(new SqliteConversationStorage(db));
             builder = builder.withTaskStore(new SqliteTaskStore(db));
         }
         return builder.build();
+    }
+
+    /**
+     * Skill plugin directories to scan, in priority order (earlier wins on pluginId collision):
+     * <ol>
+     *   <li>every {@code <name>/plugins} under the project's {@code .rex/marketplaces/}</li>
+     *   <li>every {@code <name>/plugins} under the user's {@code ~/.rex/marketplaces/}</li>
+     *   <li>{@code skills.extra_dirs} from {@code ~/.rex/config.yml}, in listed order</li>
+     * </ol>
+     * Marketplace names are just directory names — drop a new {@code <marketplace>/plugins/<plugin>/}
+     * tree under either root and it's picked up automatically, no config needed.
+     */
+    private List<String> resolveSkillDirectories(WorkspaceContext workspace, RexConfig config) {
+        List<String> dirs = new ArrayList<>();
+        dirs.addAll(listMarketplacePluginDirs(workspace.primaryRoot().resolve(".rex/marketplaces")));
+        dirs.addAll(listMarketplacePluginDirs(Path.of(System.getProperty("user.home"), ".rex/marketplaces")));
+        List<String> extra = config.getSkills().getExtraDirs();
+        if (extra != null) {
+            for (String d : extra) {
+                if (d != null && !d.isBlank()) dirs.add(expandHome(d.trim()));
+            }
+        }
+        return dirs;
+    }
+
+    /** Each subdirectory of {@code marketplacesRoot} is a named marketplace; its plugins live under {@code <name>/plugins}. */
+    private List<String> listMarketplacePluginDirs(Path marketplacesRoot) {
+        if (!Files.isDirectory(marketplacesRoot)) return List.of();
+        try (var subdirs = Files.list(marketplacesRoot)) {
+            return subdirs.filter(Files::isDirectory)
+                    .sorted()
+                    .map(p -> p.resolve("plugins").toString())
+                    .toList();
+        } catch (IOException e) {
+            return List.of();
+        }
+    }
+
+    private String expandHome(String path) {
+        if (path.equals("~") || path.startsWith("~/")) {
+            return System.getProperty("user.home") + path.substring(1);
+        }
+        return path;
     }
 
     private WorkspaceContext buildWorkspaceFor(String primaryDir, RexConfig config) {
@@ -537,7 +617,72 @@ public class CliMain implements CommandLineRunner {
 
     // ── Slash command dispatcher ─────────────────────────────────────────────
 
-    private enum SlashResult { CONTINUE, EXIT, AGENT_REBUILT }
+    /**
+     * Class rather than a plain enum so RUN_SKILL can carry the resolved capabilityId/args/
+     * displayGoal alongside it. CONTINUE/EXIT/AGENT_REBUILT stay singletons, so every existing
+     * {@code return SlashResult.CONTINUE;}-style call site and {@code == SlashResult.EXIT} check
+     * keeps working unchanged.
+     */
+    private static final class SlashResult {
+        enum Kind { CONTINUE, EXIT, AGENT_REBUILT, RUN_SKILL }
+
+        static final SlashResult CONTINUE = new SlashResult(Kind.CONTINUE, null, null, null);
+        static final SlashResult EXIT = new SlashResult(Kind.EXIT, null, null, null);
+        static final SlashResult AGENT_REBUILT = new SlashResult(Kind.AGENT_REBUILT, null, null, null);
+
+        final Kind kind;
+        final String capabilityId;
+        final String args;
+        final String rawInput;
+
+        private SlashResult(Kind kind, String capabilityId, String args, String rawInput) {
+            this.kind = kind;
+            this.capabilityId = capabilityId;
+            this.args = args;
+            this.rawInput = rawInput;
+        }
+
+        static SlashResult runSkill(String capabilityId, String args, String rawInput) {
+            return new SlashResult(Kind.RUN_SKILL, capabilityId, args, rawInput);
+        }
+    }
+
+    /** One discovered SKILL capability, keyed by both its short name and full capabilityId. */
+    private record SkillMatch(String capabilityId, String shortName, String description) {}
+
+    /** Scans the agent's marketplace for SKILL capabilities. */
+    private List<SkillMatch> listSkills(RegnexeAgent agent) {
+        List<SkillMatch> out = new ArrayList<>();
+        for (PluginDescriptor plugin : agent.getMarketplace().listEnabled()) {
+            for (CapabilityDescriptor cap : plugin.getCapabilities()) {
+                if (cap.getType() != CapabilityType.SKILL) continue;
+                out.add(new SkillMatch(cap.getCapabilityId(), cap.getName(), cap.getDescription()));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Resolves a user-typed name (short name or full "pluginId.skillName" capabilityId) to
+     * exactly one capabilityId. Returns null both when nothing matches (caller falls through to
+     * "Unknown command") and when the short name is ambiguous (caller has already printed the
+     * candidate list and should not treat it as an unknown command).
+     */
+    private String resolveSkillId(String typed, List<SkillMatch> all, PrintWriter out) {
+        for (SkillMatch m : all) {
+            if (m.capabilityId().equals(typed)) return m.capabilityId();
+        }
+        List<SkillMatch> byShortName = all.stream().filter(m -> m.shortName().equals(typed)).toList();
+        if (byShortName.size() == 1) return byShortName.get(0).capabilityId();
+        if (byShortName.size() > 1) {
+            out.println("  [warn] Ambiguous skill name '" + typed + "', candidates:");
+            byShortName.forEach(m -> out.println("    " + m.capabilityId()));
+            out.println("  Re-run with the full id, e.g. /" + byShortName.get(0).capabilityId() + " ...");
+            out.flush();
+            return null;
+        }
+        return null;
+    }
 
     private SlashResult handleSlashCommand(String raw, PrintWriter out,
                                            RexConfig config, Terminal terminal,
@@ -560,6 +705,8 @@ public class CliMain implements CommandLineRunner {
                           /add-dir <path>    add a workspace directory for this session
                           /dirs              list all workspace directories
                           /resume            resume the latest paused task in this session
+                          /skills            list available skills
+                          /<skill name> [args]  run a skill directly
 
                         Pause/Resume:
                           At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
@@ -598,6 +745,26 @@ public class CliMain implements CommandLineRunner {
                     }
                 } catch (SQLException e) {
                     out.println("  [error] " + e.getMessage());
+                }
+                out.flush();
+            }
+
+            case "/skills" -> {
+                List<SkillMatch> skills = listSkills(agent);
+                if (skills.isEmpty()) {
+                    out.println("  No skills found. Put SKILL.md under any <marketplace>/plugins/<plugin>/skills/<skill>/ tree in:");
+                    out.println("    " + ctx.getWorkspace().primaryRoot().resolve(".rex/marketplaces/"));
+                    out.println("    " + Path.of(System.getProperty("user.home"), ".rex/marketplaces/"));
+                    out.println("  or add extra plugin directories via skills.extra_dirs in ~/.rex/config.yml");
+                } else {
+                    out.printf("  %-28s  %-20s  %s%n", "SHORT NAME", "FULL ID", "DESCRIPTION");
+                    out.println("  " + "─".repeat(100));
+                    for (SkillMatch m : skills) {
+                        out.printf("  %-28s  %-20s  %s%n", m.shortName(), m.capabilityId(),
+                                truncate(m.description(), 60));
+                    }
+                    out.println();
+                    out.println("  Invoke with: /<short name> [args]  (use full id if name is ambiguous)");
                 }
                 out.flush();
             }
@@ -691,8 +858,18 @@ public class CliMain implements CommandLineRunner {
             }
 
             default -> {
-                out.println("Unknown command: " + cmd + "  (type /help for available commands)");
-                out.flush();
+                String skillName = cmd.substring(1);  // drop leading "/"
+                String skillArgs = parts.length > 1 ? parts[1] : "";
+                List<SkillMatch> skills = listSkills(agent);
+                String capabilityId = resolveSkillId(skillName, skills, out);
+                if (capabilityId != null) {
+                    return SlashResult.runSkill(capabilityId, skillArgs, raw);
+                }
+                boolean wasAmbiguous = skills.stream().anyMatch(m -> m.shortName().equals(skillName));
+                if (!wasAmbiguous) {
+                    out.println("Unknown command: " + cmd + "  (type /help for commands, /skills for available skills)");
+                    out.flush();
+                }
             }
         }
         return SlashResult.CONTINUE;
