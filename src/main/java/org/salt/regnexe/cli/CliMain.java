@@ -80,9 +80,9 @@ public class CliMain implements CommandLineRunner {
     @Autowired
     private RegnexeAgentBuilder agentBuilder;
 
-    // Filesystem-only helpers for the .rex/marketplaces/*/{plugins,cache}/ convention — see
-    // docs/design/marketplace-plugin-design.md §6. No session/CLI concept in these classes
-    // themselves; CliMain only does argument parsing and scope→path resolution.
+    // Filesystem-only helpers for the .rex/marketplaces/*/{plugins,cache}/ convention. No
+    // session/CLI concept in these classes themselves; CliMain only does argument parsing and
+    // scope→path resolution.
     private final PluginCacheInstaller pluginCacheInstaller = new PluginCacheInstaller();
     private final EnabledStateLoader enabledStateLoader = new EnabledStateLoader();
     private final EnabledStateWriter enabledStateWriter = new EnabledStateWriter();
@@ -545,14 +545,13 @@ public class CliMain implements CommandLineRunner {
             builder = builder.withTaskStore(new SqliteTaskStore(db));
         }
 
-        // See docs/design/marketplace-plugin-design.md (regnexe-agent) §3.2/§6 for the on-disk
-        // convention: skills/ (manifest-less, directly-editable) is a separate tree from
+        // On-disk convention: skills/ (manifest-less, directly-editable) is a separate tree from
         // marketplaces/*/{plugins,cache}/, each present at both user (~/.rex) and project
-        // (<workspace>/.rex) scope. Per §6.3, marketplaces/*/plugins/ is only an "installable"
-        // listing — it is NOT scanned here. Only marketplaces/*/cache/ (populated by
-        // `/plugin install`) is loaded, aligning with how Claude Code/Codex's own marketplace
-        // directories are never auto-loaded without an explicit install step. skillDirs also
-        // folds in skills.extra_dirs from config.yml (see resolveSkillDirectories).
+        // (<workspace>/.rex) scope. marketplaces/*/plugins/ is only an "installable" listing — it
+        // is NOT scanned here. Only marketplaces/*/cache/ (populated by `/plugin install`) is
+        // loaded, aligning with how Claude Code/Codex's own marketplace directories are never
+        // auto-loaded without an explicit install step. skillDirs also folds in skills.extra_dirs
+        // from config.yml (see resolveSkillDirectories).
         List<String> skillDirs = resolveSkillDirectories(workspace, config);
         if (!skillDirs.isEmpty()) {
             builder = builder.withSkillsDirectory(skillDirs.toArray(new String[0]));
@@ -561,10 +560,11 @@ public class CliMain implements CommandLineRunner {
         if (!pluginDirs.isEmpty()) {
             builder = builder.withPluginDirectory(pluginDirs.toArray(new String[0]));
         }
-        // §6.5: enabled.yml persists the soft on/off switch written by /plugin enable|disable.
+        // enabled.yml persists the soft on/off switch written by /plugin enable|disable.
         // User layer first, Project layer last so it wins on conflict — an interim default
         // (project-overrides-user, matching the convention already used for duplicate-plugin-id
-        // directory scan order below), NOT a final answer to the still-open §5.1 question.
+        // directory scan order below), NOT a final answer to the still-open cross-scope-priority
+        // question.
         Map<Scope, Path> enabledYmlByScope = new LinkedHashMap<>();
         enabledYmlByScope.put(Scope.USER, Path.of(System.getProperty("user.home"), ".rex", "enabled.yml"));
         enabledYmlByScope.put(Scope.PROJECT, workspace.primaryRoot().resolve(".rex").resolve("enabled.yml"));
@@ -575,25 +575,29 @@ public class CliMain implements CommandLineRunner {
         // of a fresh throwaway temp dir — so a skill-authoring skill (skill-creator and friends)
         // can see and edit the project's own .rex/ tree across runs. Deliberately scoped to .rex/
         // only, not the whole project root: claude-compat fallback tools should never reach
-        // source code, .git, or .env — see docs/log/2026-07-21-skill-slash-invocation.md §4.2 for
-        // the original rationale (this wiring was designed then but the CLI wiring commit lost
-        // the code — see docs/design/marketplace-plugin-design.md's "实现记录" for context).
+        // source code, .git, or .env.
         builder = builder.withClaudeCompatWorkspace(workspace.primaryRoot().resolve(".rex"));
 
         return builder.build();
     }
 
     /**
-     * {@code ~/.rex/skills}, {@code <project>/.rex/skills}, plus any {@code skills.extra_dirs}
-     * declared in {@code ~/.rex/config.yml} (in listed order) — order = load order, not priority.
+     * {@code <project>/.rex/skills}, {@code ~/.rex/skills}, plus any {@code skills.extra_dirs}
+     * declared in {@code ~/.rex/config.yml} — this order is priority order (earlier wins on a
+     * pluginId collision, since {@code DefaultPluginManager} degrades duplicates to a
+     * skip-with-warning in scan order), matching {@code resolveMarketplacePluginDirectories}
+     * (project before user) and {@code enabled.yml}'s {@code ScopeResolver} merge (Project
+     * overrides User). Project-before-user used to be reversed here, which was an inconsistency
+     * against those other two.
      * {@code extra_dirs} lets a user point at an arbitrary flat-SKILL.md directory outside the
      * {@code .rex} convention (e.g. a shared team skills checkout) without it needing to live
-     * under either scope root.
+     * under either scope root; it's listed last (lowest priority) since it's a supplementary
+     * source, not a scope layer.
      */
     private List<String> resolveSkillDirectories(WorkspaceContext workspace, RexConfig config) {
         List<String> dirs = new ArrayList<>();
-        addIfDirectory(dirs, Path.of(System.getProperty("user.home"), ".rex", "skills"));
         addIfDirectory(dirs, workspace.primaryRoot().resolve(".rex").resolve("skills"));
+        addIfDirectory(dirs, Path.of(System.getProperty("user.home"), ".rex", "skills"));
         List<String> extra = config.getSkills().getExtraDirs();
         if (extra != null) {
             for (String d : extra) {
@@ -665,6 +669,44 @@ public class CliMain implements CommandLineRunner {
             });
         } catch (IOException ignored) {
             // best-effort discovery — a missing/unreadable marketplaces/ dir just means "none found"
+        }
+    }
+
+    /**
+     * Every flat skill under {@link #resolveSkillDirectories}'s roots (project skills, user
+     * skills, extra_dirs) plus {@link #listAllInstalledEntriesInScanOrder} (marketplaces cache) —
+     * used only for {@code warnDuplicatePluginIds}'s conflict check, never for what actually gets
+     * loaded (that split stays exactly as it is: skills and marketplace cache are two independent
+     * builder calls in {@code buildAgent()}). Skills listed first because {@code buildAgent()}
+     * calls {@code withSkillsDirectory} before {@code withPluginDirectory} — matching that order
+     * here matters, not just including both: get it backwards and the warning tells the user the
+     * wrong one won. A bare skill and a marketplace plugin sharing a pluginId collide in the same
+     * way two marketplace plugins do.
+     */
+    private List<InstalledPluginEntry> listAllPluginIdSourcesForConflictCheck(WorkspaceContext workspace, RexConfig config) {
+        List<InstalledPluginEntry> entries = new ArrayList<>();
+        collectSkillEntries(entries, workspace.primaryRoot().resolve(".rex").resolve("skills"), "project");
+        collectSkillEntries(entries, Path.of(System.getProperty("user.home"), ".rex", "skills"), "user");
+        List<String> extra = config.getSkills().getExtraDirs();
+        if (extra != null) {
+            for (String d : extra) {
+                if (d != null && !d.isBlank()) collectSkillEntries(entries, Path.of(expandHome(d.trim())), "extra_dirs");
+            }
+        }
+        entries.addAll(listAllInstalledEntriesInScanOrder(workspace));
+        return entries;
+    }
+
+    /** Mirrors {@code FlatSkillLoader}'s own scan: each immediate subdirectory with a {@code SKILL.md} is one pluginId, named after the directory. */
+    private void collectSkillEntries(List<InstalledPluginEntry> entries, Path skillsRoot, String scopeLabel) {
+        if (!Files.isDirectory(skillsRoot)) return;
+        try (Stream<Path> subdirs = Files.list(skillsRoot)) {
+            subdirs.filter(Files::isDirectory).sorted()
+                    .filter(skillDir -> Files.exists(skillDir.resolve("SKILL.md")))
+                    .forEach(skillDir -> entries.add(
+                            new InstalledPluginEntry(skillDir.getFileName().toString(), "skills", scopeLabel, skillDir)));
+        } catch (IOException ignored) {
+            // best-effort discovery — a missing/unreadable skills/ dir just means "none found"
         }
     }
 
@@ -963,7 +1005,7 @@ public class CliMain implements CommandLineRunner {
             }
 
             case "/plugin" -> {
-                return handlePluginCommand(parts.length > 1 ? parts[1].trim() : "", out, ctx);
+                return handlePluginCommand(parts.length > 1 ? parts[1].trim() : "", out, ctx, config);
             }
 
             default -> {
@@ -985,11 +1027,11 @@ public class CliMain implements CommandLineRunner {
     }
 
     // ── /plugin install|uninstall|enable|disable|list ────────────────────────
-    // See docs/design/marketplace-plugin-design.md §6. install/uninstall/enable/disable all
-    // change what's on disk under .rex/, so they return AGENT_REBUILT — the next loop iteration
-    // re-runs buildAgent(), which re-resolves cache/ and re-applies enabled.yml from scratch.
+    // install/uninstall/enable/disable all change what's on disk under .rex/, so they return
+    // AGENT_REBUILT — the next loop iteration re-runs buildAgent(), which re-resolves cache/ and
+    // re-applies enabled.yml from scratch.
 
-    private SlashResult handlePluginCommand(String args, PrintWriter out, SessionContext ctx) {
+    private SlashResult handlePluginCommand(String args, PrintWriter out, SessionContext ctx, RexConfig config) {
         String[] tokens = args.isBlank() ? new String[0] : args.split("\\s+");
         if (tokens.length == 0) {
             out.println("  Usage: /plugin install|uninstall|enable|disable|list ...  (type /help for details)");
@@ -1030,10 +1072,10 @@ public class CliMain implements CommandLineRunner {
                     enabledStateWriter.setEnabled(enabledYml, globalId, true);
                     out.printf("  Installed %s (hash %s)%s -> %s%n", globalId, result.hash(),
                             result.alreadyPresent() ? " [already cached]" : "", result.installedPath());
-                    // pluginId collisions across marketplaces/scopes are silent at load time
-                    // (see warnDuplicatePluginIds's javadoc) — this is the only point the CLI can
-                    // tell the user "what you just installed may not actually be the one that runs".
-                    warnDuplicatePluginIds(out, listAllInstalledEntriesInScanOrder(ctx.getWorkspace()));
+                    // pluginId collisions across marketplaces/scopes/skills/ are silent at load
+                    // time (see warnDuplicatePluginIds's javadoc) — this is the only point the CLI
+                    // can tell the user "what you just installed may not actually be the one that runs".
+                    warnDuplicatePluginIds(out, listAllPluginIdSourcesForConflictCheck(ctx.getWorkspace(), config));
                 } catch (IllegalArgumentException e) {
                     out.println("  [error] " + e.getMessage());
                     out.flush();
@@ -1095,7 +1137,11 @@ public class CliMain implements CommandLineRunner {
                         out.printf("    [%s] %s%s%n", entry.scopeLabel(), entry.globalId(),
                                 enabled ? "" : "  (disabled)");
                     }
-                    warnDuplicatePluginIds(out, entries);
+                    // Conflict check runs against marketplaces/*/cache/ AND skills/ together — a
+                    // bare skill and a marketplace plugin sharing a pluginId collide too (§3 item 5
+                    // of the naming design doc), even though skills/ isn't itself listed above as
+                    // an "installed plugin".
+                    warnDuplicatePluginIds(out, listAllPluginIdSourcesForConflictCheck(ctx.getWorkspace(), config));
                 }
                 out.flush();
                 return SlashResult.CONTINUE;
