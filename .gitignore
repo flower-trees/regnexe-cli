@@ -41,3 +41,16 @@ build/
 
 ### codex ###
 AGENTS.md
+
+### rex runtime data ###
+# .rex/ mixes declared content meant to be committed (enabled.yml, skills/,
+# marketplaces/*/plugins/ — mirrors package.json vs node_modules) with local/derived content:
+# config.yml may hold secrets, marketplaces/*/cache/ is install-time binary content synced from
+# plugins/ by `/plugin install`. Only the latter stays ignored — see
+# regnexe-agent/docs/design/marketplace-plugin-design.md §6/§3 for why project scope needs the
+# declared parts to actually be shareable via git.
+.rex/*
+!.rex/enabled.yml
+!.rex/skills/
+!.rex/marketplaces/
+.rex/marketplaces/*/cache/

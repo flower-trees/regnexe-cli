@@ -13,10 +13,16 @@ import org.salt.jlangchain.core.message.BaseMessage;
 import org.salt.jlangchain.core.message.MessageType;
 import org.salt.regnexe.agent.core.RegnexeAgent;
 import org.salt.regnexe.agent.core.RegnexeAgentBuilder;
-import org.salt.regnexe.agent.core.common.enums.CapabilityType;
 import org.salt.regnexe.agent.core.common.enums.TaskStatus;
-import org.salt.regnexe.agent.core.market.plugin.CapabilityDescriptor;
-import org.salt.regnexe.agent.core.market.plugin.PluginDescriptor;
+import org.salt.regnexe.agent.core.marketplace.capability.CapabilityDescriptor;
+import org.salt.regnexe.agent.core.marketplace.capability.CapabilityType;
+import org.salt.regnexe.agent.core.marketplace.loader.PluginCacheInstaller;
+import org.salt.regnexe.agent.core.marketplace.plugin.PluginDescriptor;
+import org.salt.regnexe.agent.core.marketplace.scope.EnabledStateLoader;
+import org.salt.regnexe.agent.core.marketplace.scope.EnabledStateWriter;
+import org.salt.regnexe.agent.core.marketplace.scope.Scope;
+import org.salt.regnexe.agent.core.marketplace.scope.ScopeResolver;
+import org.salt.regnexe.agent.core.marketplace.scope.ScopedEnabledState;
 import org.salt.regnexe.agent.core.task.AgentResult;
 import org.salt.regnexe.agent.core.task.state.RoundRecord;
 import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
@@ -50,8 +56,11 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -70,6 +79,14 @@ public class CliMain implements CommandLineRunner {
 
     @Autowired
     private RegnexeAgentBuilder agentBuilder;
+
+    // Filesystem-only helpers for the .rex/marketplaces/*/{plugins,cache}/ convention — see
+    // docs/design/marketplace-plugin-design.md §6. No session/CLI concept in these classes
+    // themselves; CliMain only does argument parsing and scope→path resolution.
+    private final PluginCacheInstaller pluginCacheInstaller = new PluginCacheInstaller();
+    private final EnabledStateLoader enabledStateLoader = new EnabledStateLoader();
+    private final EnabledStateWriter enabledStateWriter = new EnabledStateWriter();
+    private final ScopeResolver scopeResolver = new ScopeResolver();
 
     public static void main(String[] args) {
         if (hasArg(args, "--help") || hasArg(args, "-h")) {
@@ -293,7 +310,7 @@ public class CliMain implements CommandLineRunner {
                             AgentResult skillResult = runAgentTask(
                                     () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
                                     ctx, out, executing, interruptCount);
-                            handleAgentResult(skillResult, ctx, out, db);
+                            handleAgentResult(skillResult, ctx, out, renderer, db);
                             if (db != null) {
                                 try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                             }
@@ -523,42 +540,60 @@ public class CliMain implements CommandLineRunner {
                         FileTools.editFile(workspace, terminal, pauseAction),
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
                 );
-                        BashTool.bash(workspace, config.getTools().getBash(), terminal, pauseAction)
-                )
-                // Project marketplaces first, then user marketplaces, then configured extra_dirs,
-                // so earlier entries win on an identically-named plugin (DefaultPluginManager
-                // degrades pluginId collisions to a skip-with-warning in scan order — see
-                // docs/design/skill-slash-invocation.md).
-                .withDirectory(resolveSkillDirectories(workspace, config).toArray(new String[0]))
-                // Claude-compatible mode's scoped filesystem tools (create_directory/write_file/
-                // read_file/list_directory/file_exists) get this as their sandbox root, instead of
-                // an anonymous throwaway temp dir — so a skill-authoring skill (skill-creator) can
-                // see and edit skills that already exist here, and anything it creates lands where
-                // /skills will actually find it. Scoped to the plugins dir specifically (not the
-                // whole project) so a claude-compat skill never gets read/write access to source
-                // code, .git, .env, etc. — only to skill/plugin content.
-                .withClaudeCompatWorkspace(workspace.primaryRoot().resolve(".rex/marketplaces/default/plugins"));
         if (db != null) {
             builder = builder.withSessionStorage(new SqliteConversationStorage(db));
             builder = builder.withTaskStore(new SqliteTaskStore(db));
         }
+
+        // See docs/design/marketplace-plugin-design.md (regnexe-agent) §3.2/§6 for the on-disk
+        // convention: skills/ (manifest-less, directly-editable) is a separate tree from
+        // marketplaces/*/{plugins,cache}/, each present at both user (~/.rex) and project
+        // (<workspace>/.rex) scope. Per §6.3, marketplaces/*/plugins/ is only an "installable"
+        // listing — it is NOT scanned here. Only marketplaces/*/cache/ (populated by
+        // `/plugin install`) is loaded, aligning with how Claude Code/Codex's own marketplace
+        // directories are never auto-loaded without an explicit install step. skillDirs also
+        // folds in skills.extra_dirs from config.yml (see resolveSkillDirectories).
+        List<String> skillDirs = resolveSkillDirectories(workspace, config);
+        if (!skillDirs.isEmpty()) {
+            builder = builder.withSkillsDirectory(skillDirs.toArray(new String[0]));
+        }
+        List<String> pluginDirs = resolveMarketplacePluginDirectories(workspace);
+        if (!pluginDirs.isEmpty()) {
+            builder = builder.withPluginDirectory(pluginDirs.toArray(new String[0]));
+        }
+        // §6.5: enabled.yml persists the soft on/off switch written by /plugin enable|disable.
+        // User layer first, Project layer last so it wins on conflict — an interim default
+        // (project-overrides-user, matching the convention already used for duplicate-plugin-id
+        // directory scan order below), NOT a final answer to the still-open §5.1 question.
+        Map<Scope, Path> enabledYmlByScope = new LinkedHashMap<>();
+        enabledYmlByScope.put(Scope.USER, Path.of(System.getProperty("user.home"), ".rex", "enabled.yml"));
+        enabledYmlByScope.put(Scope.PROJECT, workspace.primaryRoot().resolve(".rex").resolve("enabled.yml"));
+        builder = builder.withEnabledState(enabledYmlByScope, List.of(Scope.USER, Scope.PROJECT));
+
+        // A claudeCompatMode Skill with no declared allowed-tools (i.e. most real Claude Code
+        // skills) falls back to sandboxed filesystem tools scoped to this workspace root instead
+        // of a fresh throwaway temp dir — so a skill-authoring skill (skill-creator and friends)
+        // can see and edit the project's own .rex/ tree across runs. Deliberately scoped to .rex/
+        // only, not the whole project root: claude-compat fallback tools should never reach
+        // source code, .git, or .env — see docs/log/2026-07-21-skill-slash-invocation.md §4.2 for
+        // the original rationale (this wiring was designed then but the CLI wiring commit lost
+        // the code — see docs/design/marketplace-plugin-design.md's "实现记录" for context).
+        builder = builder.withClaudeCompatWorkspace(workspace.primaryRoot().resolve(".rex"));
+
         return builder.build();
     }
 
     /**
-     * Skill plugin directories to scan, in priority order (earlier wins on pluginId collision):
-     * <ol>
-     *   <li>every {@code <name>/plugins} under the project's {@code .rex/marketplaces/}</li>
-     *   <li>every {@code <name>/plugins} under the user's {@code ~/.rex/marketplaces/}</li>
-     *   <li>{@code skills.extra_dirs} from {@code ~/.rex/config.yml}, in listed order</li>
-     * </ol>
-     * Marketplace names are just directory names — drop a new {@code <marketplace>/plugins/<plugin>/}
-     * tree under either root and it's picked up automatically, no config needed.
+     * {@code ~/.rex/skills}, {@code <project>/.rex/skills}, plus any {@code skills.extra_dirs}
+     * declared in {@code ~/.rex/config.yml} (in listed order) — order = load order, not priority.
+     * {@code extra_dirs} lets a user point at an arbitrary flat-SKILL.md directory outside the
+     * {@code .rex} convention (e.g. a shared team skills checkout) without it needing to live
+     * under either scope root.
      */
     private List<String> resolveSkillDirectories(WorkspaceContext workspace, RexConfig config) {
         List<String> dirs = new ArrayList<>();
-        dirs.addAll(listMarketplacePluginDirs(workspace.primaryRoot().resolve(".rex/marketplaces")));
-        dirs.addAll(listMarketplacePluginDirs(Path.of(System.getProperty("user.home"), ".rex/marketplaces")));
+        addIfDirectory(dirs, Path.of(System.getProperty("user.home"), ".rex", "skills"));
+        addIfDirectory(dirs, workspace.primaryRoot().resolve(".rex").resolve("skills"));
         List<String> extra = config.getSkills().getExtraDirs();
         if (extra != null) {
             for (String d : extra) {
@@ -568,24 +603,95 @@ public class CliMain implements CommandLineRunner {
         return dirs;
     }
 
-    /** Each subdirectory of {@code marketplacesRoot} is a named marketplace; its plugins live under {@code <name>/plugins}. */
-    private List<String> listMarketplacePluginDirs(Path marketplacesRoot) {
-        if (!Files.isDirectory(marketplacesRoot)) return List.of();
-        try (var subdirs = Files.list(marketplacesRoot)) {
-            return subdirs.filter(Files::isDirectory)
-                    .sorted()
-                    .map(p -> p.resolve("plugins").toString())
-                    .toList();
-        } catch (IOException e) {
-            return List.of();
-        }
-    }
-
     private String expandHome(String path) {
         if (path.equals("~") || path.startsWith("~/")) {
             return System.getProperty("user.home") + path.substring(1);
         }
         return path;
+    }
+
+    /**
+     * One installed plugin's resolved location, in the exact order {@link #buildAgent} loads
+     * plugins in — the first {@link InstalledPluginEntry} for a given {@code pluginId} is the one
+     * that actually wins the registry (see {@link #resolveMarketplacePluginDirectories}); every
+     * later one with the same {@code pluginId} is silently shadowed by
+     * {@code DefaultPluginManager}'s "first-scanned wins" duplicate-id skip. {@code SimpleMarketplace}
+     * keys its registry by bare {@code pluginId} only (no marketplace namespace — a deliberate
+     * simplification, see the design doc's "Scope-creep self-correction" note), so the same
+     * pluginId installed under two different marketplace names collides exactly like this.
+     */
+    private record InstalledPluginEntry(String pluginId, String marketplaceName, String scopeLabel, Path resolvedDir) {
+        String globalId() {
+            return pluginId + "@" + marketplaceName;
+        }
+    }
+
+    /**
+     * Every plugin currently resolved via {@code cache/<plugin-id>/CURRENT} under
+     * {@code ~/.rex/marketplaces/*} and {@code <project>/.rex/marketplaces/*} — one entry per
+     * installed plugin's resolved version directory (not one per marketplace — see
+     * {@link PluginCacheInstaller#resolveCurrent}). {@code plugins/} is deliberately NOT scanned
+     * here — see §6.3 of the design doc; it's just what {@code /plugin install} reads sources
+     * from, not something that's ever auto-loaded. Project scope listed before user scope so
+     * {@code DefaultPluginManager}'s "first-scanned wins" duplicate-id skip favors the
+     * project-level plugin (matches the existing
+     * DefaultPluginManagerManifestCompatTest#duplicatePluginIdAcrossDirectoriesShouldSkipInsteadOfThrow
+     * convention in regnexe-agent: caller lists the higher-priority source first).
+     */
+    private List<String> resolveMarketplacePluginDirectories(WorkspaceContext workspace) {
+        return listAllInstalledEntriesInScanOrder(workspace).stream()
+                .map(e -> e.resolvedDir().toString())
+                .toList();
+    }
+
+    /** Same scan (and same priority order) as {@link #resolveMarketplacePluginDirectories}, but keeping pluginId/marketplace/scope for display and conflict-detection (see {@code /plugin list} and {@code /plugin install}). */
+    private List<InstalledPluginEntry> listAllInstalledEntriesInScanOrder(WorkspaceContext workspace) {
+        List<InstalledPluginEntry> entries = new ArrayList<>();
+        collectInstalledEntries(entries, workspace.primaryRoot().resolve(".rex").resolve("marketplaces"), "project");
+        collectInstalledEntries(entries, Path.of(System.getProperty("user.home"), ".rex", "marketplaces"), "user");
+        return entries;
+    }
+
+    private void collectInstalledEntries(List<InstalledPluginEntry> entries, Path marketplacesRoot, String scopeLabel) {
+        if (!Files.isDirectory(marketplacesRoot)) return;
+        try (Stream<Path> subdirs = Files.list(marketplacesRoot)) {
+            subdirs.filter(Files::isDirectory).sorted().forEach(marketDir -> {
+                String marketplaceName = marketDir.getFileName().toString();
+                for (String pluginId : pluginCacheInstaller.listInstalledIds(marketDir)) {
+                    pluginCacheInstaller.resolveCurrent(marketDir, pluginId)
+                            .ifPresent(dir -> entries.add(
+                                    new InstalledPluginEntry(pluginId, marketplaceName, scopeLabel, dir)));
+                }
+            });
+        } catch (IOException ignored) {
+            // best-effort discovery — a missing/unreadable marketplaces/ dir just means "none found"
+        }
+    }
+
+    /**
+     * Prints one warning line per pluginId installed under more than one location — the registry
+     * only keys by bare pluginId, so every entry after the first for a given id is silently
+     * dropped by {@code DefaultPluginManager} at load time (a WARN-level log line that, in this
+     * packaged jar, is neither shown on the console nor written to any file — see
+     * harness-testbed case 002's re-run notes). This is the CLI's only way to surface that.
+     */
+    private void warnDuplicatePluginIds(PrintWriter out, List<InstalledPluginEntry> entries) {
+        Map<String, InstalledPluginEntry> winners = new LinkedHashMap<>();
+        for (InstalledPluginEntry entry : entries) {
+            InstalledPluginEntry winner = winners.putIfAbsent(entry.pluginId(), entry);
+            if (winner != null) {
+                out.printf("  [warn] plugin id '%s' is installed in more than one place — "
+                                + "only %s (%s) is actually active; %s (%s) is silently shadowed "
+                                + "(first-scanned wins; use /plugin uninstall on the one you don't want)%n",
+                        entry.pluginId(),
+                        winner.globalId(), winner.scopeLabel(),
+                        entry.globalId(), entry.scopeLabel());
+            }
+        }
+    }
+
+    private void addIfDirectory(List<String> dirs, Path path) {
+        if (Files.isDirectory(path)) dirs.add(path.toString());
     }
 
     private WorkspaceContext buildWorkspaceFor(String primaryDir, RexConfig config) {
@@ -702,6 +808,10 @@ public class CliMain implements CommandLineRunner {
                           /resume            resume the latest paused task in this session
                           /skills            list available skills
                           /<skill name> [args]  run a skill directly
+                          /plugin install <local-path> [--marketplace <name>] [--scope user|project]
+                          /plugin uninstall <plugin-id>@<marketplace> [--scope user|project]
+                          /plugin enable|disable <plugin-id>@<marketplace> [--scope user|project]
+                          /plugin list       list installed plugins (both scopes) with enabled state
 
                         Pause/Resume:
                           At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
@@ -852,6 +962,10 @@ public class CliMain implements CommandLineRunner {
                 out.flush();
             }
 
+            case "/plugin" -> {
+                return handlePluginCommand(parts.length > 1 ? parts[1].trim() : "", out, ctx);
+            }
+
             default -> {
                 String skillName = cmd.substring(1);  // drop leading "/"
                 String skillArgs = parts.length > 1 ? parts[1] : "";
@@ -868,5 +982,155 @@ public class CliMain implements CommandLineRunner {
             }
         }
         return SlashResult.CONTINUE;
+    }
+
+    // ── /plugin install|uninstall|enable|disable|list ────────────────────────
+    // See docs/design/marketplace-plugin-design.md §6. install/uninstall/enable/disable all
+    // change what's on disk under .rex/, so they return AGENT_REBUILT — the next loop iteration
+    // re-runs buildAgent(), which re-resolves cache/ and re-applies enabled.yml from scratch.
+
+    private SlashResult handlePluginCommand(String args, PrintWriter out, SessionContext ctx) {
+        String[] tokens = args.isBlank() ? new String[0] : args.split("\\s+");
+        if (tokens.length == 0) {
+            out.println("  Usage: /plugin install|uninstall|enable|disable|list ...  (type /help for details)");
+            out.flush();
+            return SlashResult.CONTINUE;
+        }
+        String subcmd = tokens[0];
+        Map<String, String> flags = new LinkedHashMap<>();
+        List<String> positional = new ArrayList<>();
+        for (int i = 1; i < tokens.length; i++) {
+            if (("--marketplace".equals(tokens[i]) || "--scope".equals(tokens[i])) && i + 1 < tokens.length) {
+                flags.put(tokens[i].substring(2), tokens[++i]);
+            } else {
+                positional.add(tokens[i]);
+            }
+        }
+        String marketplaceName = flags.getOrDefault("marketplace", "default");
+        boolean userScope = "user".equalsIgnoreCase(flags.getOrDefault("scope", "project"));
+        Path rexRoot = userScope
+                ? Path.of(System.getProperty("user.home"), ".rex")
+                : ctx.getWorkspace().primaryRoot().resolve(".rex");
+        Path enabledYml = rexRoot.resolve("enabled.yml");
+
+        switch (subcmd) {
+            case "install" -> {
+                if (positional.isEmpty()) {
+                    out.println("  Usage: /plugin install <local-path> [--marketplace <name>] [--scope user|project]");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                Path source = Path.of(positional.get(0)).toAbsolutePath().normalize();
+                Path marketplaceRoot = rexRoot.resolve("marketplaces").resolve(marketplaceName);
+                try {
+                    PluginCacheInstaller.InstallResult result = pluginCacheInstaller.install(source, marketplaceRoot);
+                    String globalId = result.pluginId() + "@" + marketplaceName;
+                    // Explicit, even though undeclared already defaults to enabled (§6.5) — makes
+                    // enabled.yml a readable record of "this came in via install".
+                    enabledStateWriter.setEnabled(enabledYml, globalId, true);
+                    out.printf("  Installed %s (hash %s)%s -> %s%n", globalId, result.hash(),
+                            result.alreadyPresent() ? " [already cached]" : "", result.installedPath());
+                    // pluginId collisions across marketplaces/scopes are silent at load time
+                    // (see warnDuplicatePluginIds's javadoc) — this is the only point the CLI can
+                    // tell the user "what you just installed may not actually be the one that runs".
+                    warnDuplicatePluginIds(out, listAllInstalledEntriesInScanOrder(ctx.getWorkspace()));
+                } catch (IllegalArgumentException e) {
+                    out.println("  [error] " + e.getMessage());
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                } catch (RuntimeException e) {
+                    out.println("  [error] install failed: " + e.getMessage());
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                out.flush();
+                return SlashResult.AGENT_REBUILT;
+            }
+
+            case "uninstall" -> {
+                if (positional.isEmpty()) {
+                    out.println("  Usage: /plugin uninstall <plugin-id>@<marketplace> [--scope user|project]");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                String globalId = positional.get(0);
+                String pluginId = pluginIdOf(globalId);
+                String marketplace = marketplaceOf(globalId, marketplaceName);
+                Path marketplaceRoot = rexRoot.resolve("marketplaces").resolve(marketplace);
+                boolean removed = pluginCacheInstaller.uninstall(marketplaceRoot, pluginId);
+                enabledStateWriter.remove(enabledYml, pluginId + "@" + marketplace);
+                out.println(removed ? "  Uninstalled " + pluginId + "@" + marketplace
+                        : "  Nothing installed for " + pluginId + "@" + marketplace);
+                out.flush();
+                return removed ? SlashResult.AGENT_REBUILT : SlashResult.CONTINUE;
+            }
+
+            case "enable", "disable" -> {
+                if (positional.isEmpty()) {
+                    out.printf("  Usage: /plugin %s <plugin-id>@<marketplace> [--scope user|project]%n", subcmd);
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                String globalId = positional.get(0);
+                boolean value = "enable".equals(subcmd);
+                enabledStateWriter.setEnabled(enabledYml, globalId, value);
+                out.println("  " + (value ? "Enabled " : "Disabled ") + globalId + " (scope: " + rexRoot + ")");
+                out.flush();
+                return SlashResult.AGENT_REBUILT;
+            }
+
+            case "list" -> {
+                out.println("  Installed plugins:");
+                List<InstalledPluginEntry> entries = listAllInstalledEntriesInScanOrder(ctx.getWorkspace());
+                if (entries.isEmpty()) {
+                    out.println("    (none)");
+                } else {
+                    // Same USER-then-PROJECT merge order as buildAgent()'s withEnabledState — the
+                    // "enabled" column here now reflects what would ACTUALLY run, not just this
+                    // one scope's own enabled.yml (which used to be able to disagree with the
+                    // resolved truth whenever both scopes declared the same key).
+                    Map<String, Boolean> resolvedEnabled = resolveEnabledAcrossScopes(ctx.getWorkspace());
+                    for (InstalledPluginEntry entry : entries) {
+                        boolean enabled = resolvedEnabled.getOrDefault(entry.globalId(), true);
+                        out.printf("    [%s] %s%s%n", entry.scopeLabel(), entry.globalId(),
+                                enabled ? "" : "  (disabled)");
+                    }
+                    warnDuplicatePluginIds(out, entries);
+                }
+                out.flush();
+                return SlashResult.CONTINUE;
+            }
+
+            default -> {
+                out.println("  Unknown /plugin subcommand: " + subcmd
+                        + "  (expected install|uninstall|enable|disable|list)");
+                out.flush();
+                return SlashResult.CONTINUE;
+            }
+        }
+    }
+
+    private String pluginIdOf(String globalId) {
+        int at = globalId.lastIndexOf('@');
+        return at >= 0 ? globalId.substring(0, at) : globalId;
+    }
+
+    private String marketplaceOf(String globalId, String defaultMarketplace) {
+        int at = globalId.lastIndexOf('@');
+        return at >= 0 ? globalId.substring(at + 1) : defaultMarketplace;
+    }
+
+    /**
+     * Same USER-then-PROJECT merge {@code buildAgent()}'s {@code withEnabledState} call uses (§6.5) —
+     * kept in one place so {@code /plugin list} can never show a different "enabled" answer than
+     * what actually gets applied at agent build time.
+     */
+    private Map<String, Boolean> resolveEnabledAcrossScopes(WorkspaceContext workspace) {
+        Path userEnabledYml = Path.of(System.getProperty("user.home"), ".rex", "enabled.yml");
+        Path projectEnabledYml = workspace.primaryRoot().resolve(".rex").resolve("enabled.yml");
+        List<ScopedEnabledState> layers = List.of(
+                new ScopedEnabledState(Scope.USER, enabledStateLoader.load(userEnabledYml)),
+                new ScopedEnabledState(Scope.PROJECT, enabledStateLoader.load(projectEnabledYml)));
+        return scopeResolver.resolve(layers);
     }
 }
