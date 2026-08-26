@@ -1,10 +1,10 @@
 package org.salt.regnexe.cli.tools;
 
-import org.jline.terminal.Terminal;
 import org.salt.jlangchain.rag.tools.Tool;
+import org.salt.regnexe.cli.ui.CliRenderer;
+import org.salt.regnexe.cli.ui.ConfirmChoice;
 
 import java.io.IOException;
-import java.io.PrintWriter;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -177,7 +177,7 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool writeFile(WorkspaceContext ctx, Terminal terminal, Runnable pauseAction) {
+    public static Tool writeFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction) {
         return Tool.builder()
                 .name("write_file")
                 .description(
@@ -197,36 +197,19 @@ public class FileTools {
                     } catch (SecurityException e) {
                         return "Error: " + e.getMessage();
                     }
-                    PrintWriter out = terminal.writer();
                     boolean exists = Files.exists(file);
-                    out.println();
-                    out.println("  Write file: " + ctx.displayPath(file)
-                            + (exists ? "  (overwrites existing)" : "  (new file)"));
-                    out.println("  " + "─".repeat(44));
-                    // Preview first 20 lines
-                    String[] lines = content.split("\n", -1);
-                    int preview = Math.min(lines.length, 20);
-                    for (int i = 0; i < preview; i++) {
-                        out.printf("  %4d  %s%n", i + 1, lines[i]);
+                    renderer.filePreview(ctx.displayPath(file), content, !exists);
+                    ConfirmChoice choice = renderer.confirm("apply");
+                    if (choice == ConfirmChoice.PAUSE) {
+                        if (pauseAction != null) pauseAction.run();
+                        return "Task paused by user.";
                     }
-                    if (lines.length > preview) {
-                        out.printf("  ... (%d more lines)%n", lines.length - preview);
-                    }
-                    out.println("  " + "─".repeat(44));
-                    out.print("  Apply? [y/N/pause] ");
-                    out.flush();
+                    if (choice != ConfirmChoice.YES) return "Write cancelled by user.";
                     try {
-                        String answer = readLine(terminal);
-                        out.println();
-                        out.flush();
-                        if ("pause".equals(answer) || "/pause".equals(answer)) {
-                            if (pauseAction != null) pauseAction.run();
-                            return "Task paused by user.";
-                        }
-                        if (!answer.equals("y") && !answer.equals("yes")) return "Write cancelled by user.";
                         Files.createDirectories(file.getParent());
                         Files.writeString(file, content);
-                        return "Written: " + ctx.displayPath(file) + " (" + lines.length + " lines)";
+                        int lineCount = content.split("\n", -1).length;
+                        return "Written: " + ctx.displayPath(file) + " (" + lineCount + " lines)";
                     } catch (IOException e) {
                         return "Error writing file: " + e.getMessage();
                     }
@@ -234,7 +217,7 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool editFile(WorkspaceContext ctx, Terminal terminal, Runnable pauseAction) {
+    public static Tool editFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction) {
         return Tool.builder()
                 .name("edit_file")
                 .description(
@@ -269,30 +252,15 @@ public class FileTools {
                     if (current.indexOf(oldString, idx + 1) >= 0) {
                         return "Error: old_string matches multiple locations — make it more specific";
                     }
-                    // Build diff preview
                     String updated = current.substring(0, idx) + newString + current.substring(idx + oldString.length());
-                    PrintWriter out = terminal.writer();
-                    out.println();
-                    out.println("  Edit file: " + ctx.displayPath(file));
-                    out.println("  " + "─".repeat(44));
-                    for (String line : oldString.split("\n", -1)) {
-                        out.println("  [31m- " + line + "[0m");
+                    renderer.editPreview(ctx.displayPath(file), oldString, newString);
+                    ConfirmChoice choice = renderer.confirm("apply");
+                    if (choice == ConfirmChoice.PAUSE) {
+                        if (pauseAction != null) pauseAction.run();
+                        return "Task paused by user.";
                     }
-                    for (String line : newString.split("\n", -1)) {
-                        out.println("  [32m+ " + line + "[0m");
-                    }
-                    out.println("  " + "─".repeat(44));
-                    out.print("  Apply? [y/N/pause] ");
-                    out.flush();
+                    if (choice != ConfirmChoice.YES) return "Edit cancelled by user.";
                     try {
-                        String answer = readLine(terminal);
-                        out.println();
-                        out.flush();
-                        if ("pause".equals(answer) || "/pause".equals(answer)) {
-                            if (pauseAction != null) pauseAction.run();
-                            return "Task paused by user.";
-                        }
-                        if (!answer.equals("y") && !answer.equals("yes")) return "Edit cancelled by user.";
                         Files.writeString(file, updated);
                         return "Applied edit to " + ctx.displayPath(file);
                     } catch (IOException e) {
@@ -332,14 +300,5 @@ public class FileTools {
                 && !name.endsWith(".jpg") && !name.endsWith(".gif") && !name.endsWith(".zip")
                 && !name.endsWith(".gz")  && !name.endsWith(".pdf") && !name.endsWith(".exe")
                 && !name.endsWith(".so")  && !name.endsWith(".dylib");
-    }
-
-    private static String readLine(Terminal terminal) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        int ch;
-        while ((ch = terminal.reader().read()) != -1 && ch != '\n' && ch != '\r') {
-            sb.append((char) ch);
-        }
-        return sb.toString().trim().toLowerCase();
     }
 }

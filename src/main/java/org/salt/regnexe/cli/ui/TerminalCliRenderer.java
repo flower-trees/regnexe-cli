@@ -129,23 +129,76 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
-    public ConfirmChoice confirmRun() {
+    public void filePreview(String path, String content, boolean isNew) {
+        String[] lines = content.split("\n", -1);
+        int preview = Math.min(lines.length, 20);
+        String header = path + (isNew ? "  (new file)" : "  (overwrites existing)");
+        if (theme.theme() == CliTheme.CODEX) {
+            out.println("│ " + header);
+            for (int i = 0; i < preview; i++) {
+                out.printf("│ %4d  %s%n", i + 1, lines[i]);
+            }
+            if (lines.length > preview) {
+                out.println("│ ... (" + (lines.length - preview) + " more lines)");
+            }
+        } else {
+            out.println();
+            out.println("  Write file: " + header);
+            out.println("  " + "─".repeat(44));
+            for (int i = 0; i < preview; i++) {
+                out.printf("  %4d  %s%n", i + 1, lines[i]);
+            }
+            if (lines.length > preview) {
+                out.printf("  ... (%d more lines)%n", lines.length - preview);
+            }
+            out.println("  " + "─".repeat(44));
+        }
+        out.flush();
+    }
+
+    @Override
+    public void editPreview(String path, String oldString, String newString) {
+        if (theme.theme() == CliTheme.CODEX) {
+            out.println("│ " + path);
+            for (String line : oldString.split("\n", -1)) {
+                out.println("│ " + red("- " + line));
+            }
+            for (String line : newString.split("\n", -1)) {
+                out.println("│ " + green("+ " + line));
+            }
+        } else {
+            out.println();
+            out.println("  Edit file: " + path);
+            out.println("  " + "─".repeat(44));
+            for (String line : oldString.split("\n", -1)) {
+                out.println("  " + red("- " + line));
+            }
+            for (String line : newString.split("\n", -1)) {
+                out.println("  " + green("+ " + line));
+            }
+            out.println("  " + "─".repeat(44));
+        }
+        out.flush();
+    }
+
+    @Override
+    public ConfirmChoice confirm(String verb) {
         if (theme.theme() != CliTheme.CODEX) {
-            return confirmLine();
+            return confirmLine(verb);
         }
         Attributes original = terminal.enterRawMode();
         try {
-            return confirmRunMenu();
+            return confirmMenu(verb);
         } finally {
             terminal.setAttributes(original);
         }
     }
 
-    private ConfirmChoice confirmRunMenu() {
+    private ConfirmChoice confirmMenu(String verb) {
         ConfirmChoice[] choices = {ConfirmChoice.NO, ConfirmChoice.YES, ConfirmChoice.PAUSE};
         String[] labels = {"no", "yes", "pause"};
         int selected = 0;
-        out.println("│ run?");
+        out.println("│ " + verb + "?");
         renderChoices(labels, selected);
         while (true) {
             int ch = readChar();
@@ -266,8 +319,9 @@ public class TerminalCliRenderer implements CliRenderer {
         }
     }
 
-    private ConfirmChoice confirmLine() {
-        out.print("  Execute? [y/N/pause] ");
+    private ConfirmChoice confirmLine(String verb) {
+        String label = Character.toUpperCase(verb.charAt(0)) + verb.substring(1);
+        out.print("  " + label + "? [y/N/pause] ");
         out.flush();
         String answer = readLine().trim().toLowerCase();
         out.println();
@@ -366,5 +420,9 @@ public class TerminalCliRenderer implements CliRenderer {
 
     private String red(String text) {
         return theme.colorEnabled() ? Ansi.RED + text + Ansi.RESET : text;
+    }
+
+    private String green(String text) {
+        return theme.colorEnabled() ? Ansi.GREEN + text + Ansi.RESET : text;
     }
 }

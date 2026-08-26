@@ -99,7 +99,7 @@ public class BashTool {
 
                     boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
                     if (needsConfirm) {
-                        ConfirmChoice choice = renderer.confirmRun();
+                        ConfirmChoice choice = renderer.confirm("run");
                         if (choice == ConfirmChoice.PAUSE) {
                             if (pauseAction != null) pauseAction.run();
                             return "Task paused by user.";

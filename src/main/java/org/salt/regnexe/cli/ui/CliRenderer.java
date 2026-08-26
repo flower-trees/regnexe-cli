@@ -12,7 +12,12 @@ public interface CliRenderer {
     void toolCalled(String text);
     void toolResult(String text);
     void bashCommand(String command);
-    ConfirmChoice confirmRun();
+    /** Preview shown before a write_file confirmation: the target path and content to write. */
+    void filePreview(String path, String content, boolean isNew);
+    /** Preview shown before an edit_file confirmation: the target path and the replaced text. */
+    void editPreview(String path, String oldString, String newString);
+    /** Asks the user to confirm an action described by {@code verb} (e.g. "run", "apply"). */
+    ConfirmChoice confirm(String verb);
     void tokenSummary(String json);
     void interruptPausing();
     void secondInterrupt();

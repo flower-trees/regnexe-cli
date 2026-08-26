@@ -126,7 +126,8 @@ public class CliMain implements CommandLineRunner {
 
                 Usage:
                   rex [--session <name>]
-                  rex --resume <session-id>
+                  rex --continue | -c        continue the most recently used session
+                  rex --resume <session-id>  resume a paused task in that session
                   rex --help
                   rex --version
 
@@ -169,9 +170,10 @@ public class CliMain implements CommandLineRunner {
     public void run(String... args) throws Exception {
         RexConfig config = RexConfig.load();
 
-        // Parse --session / --resume arguments
+        // Parse --session / --resume / --continue arguments
         String sessionArg = null;
         String resumeArg = null;
+        boolean continueArg = false;
         for (int i = 0; i < args.length; i++) {
             if ("--session".equals(args[i]) && i + 1 < args.length) {
                 sessionArg = args[i + 1];
@@ -179,6 +181,8 @@ public class CliMain implements CommandLineRunner {
                 resumeArg = args[i + 1];
                 // --resume implies --session with the same name
                 if (sessionArg == null) sessionArg = resumeArg;
+            } else if ("--continue".equals(args[i]) || "-c".equals(args[i])) {
+                continueArg = true;
             }
         }
 
@@ -242,7 +246,9 @@ public class CliMain implements CommandLineRunner {
             }
         });
 
-        SessionContext ctx = resolveSession(sessionArg, config, db);
+        SessionContext ctx = continueArg
+                ? resolveMostRecentSession(config, db)
+                : resolveSession(sessionArg, config, db);
         RegnexeAgent agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
         agentRef.set(agent);
 
@@ -428,6 +434,34 @@ public class CliMain implements CommandLineRunner {
         }
     }
 
+    /**
+     * {@code --continue}/{@code -c}: picks up the most recently used session without the caller
+     * needing to remember its name. Deliberately does NOT touch Task-level resume ({@code
+     * --resume <name>} stays the only way to trigger that) — this only re-attaches Session memory
+     * (Layer 1), same as if the caller had typed {@code --session <that name>} themselves. No
+     * sessions yet (fresh install) falls back to the same default-session bootstrap as a bare,
+     * no-flags launch.
+     */
+    private SessionContext resolveMostRecentSession(RexConfig config, RexDatabase db) {
+        if (db == null) {
+            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            return new SessionContext(UUID.randomUUID().toString(), DEFAULT_SESSION, ws);
+        }
+        try {
+            List<SessionRow> sessions = db.listSessions(); // ORDER BY updated_at DESC
+            if (sessions.isEmpty()) {
+                return resolveSession(null, config, db);
+            }
+            SessionRow row = sessions.get(0);
+            WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
+            return new SessionContext(row.getSessionId(), row.getName(), ws);
+        } catch (SQLException e) {
+            System.err.println("[warn] Session DB error: " + e.getMessage());
+            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            return new SessionContext(UUID.randomUUID().toString(), DEFAULT_SESSION, ws);
+        }
+    }
+
     // ── Result handling ───────────────────────────────────────────────────────
 
     private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out,
@@ -529,6 +563,7 @@ public class CliMain implements CommandLineRunner {
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
                 .withSessionBufferSize(ac.getSessionBufferSize())
+                .withSessionCompactPeriod(ac.getSessionCompactPeriod())
                 .withAgentContext(SlidingWindowContext.builder()
                         .windowSize(ac.getContextWindowSize())
                         .build())
@@ -536,8 +571,8 @@ public class CliMain implements CommandLineRunner {
                         FileTools.readFile(workspace),
                         FileTools.listFiles(workspace),
                         FileTools.searchFiles(workspace),
-                        FileTools.writeFile(workspace, terminal, pauseAction),
-                        FileTools.editFile(workspace, terminal, pauseAction),
+                        FileTools.writeFile(workspace, renderer, pauseAction),
+                        FileTools.editFile(workspace, renderer, pauseAction),
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
                 );
         if (db != null) {
@@ -578,7 +613,40 @@ public class CliMain implements CommandLineRunner {
         // source code, .git, or .env.
         builder = builder.withClaudeCompatWorkspace(workspace.primaryRoot().resolve(".rex"));
 
+        // Long-term project memory (REX.md) — independent of the three memory layers; always
+        // injected regardless of session/history.
+        String projectMemory = resolveProjectMemory(workspace);
+        if (!projectMemory.isBlank()) {
+            builder = builder.withProjectMemory(projectMemory);
+        }
+
         return builder.build();
+    }
+
+    /**
+     * Reads {@code ~/.rex/REX.md} and {@code <project>/.rex/REX.md} and concatenates them —
+     * user layer first, project layer last (closer to the model's attention, and project can
+     * add context beyond what the user-level file says). Missing files are silently skipped;
+     * this is meant to be optional, unlike {@code enabled.yml}/skills which have real absence
+     * semantics.
+     */
+    private String resolveProjectMemory(WorkspaceContext workspace) {
+        StringBuilder sb = new StringBuilder();
+        appendRexMd(sb, Path.of(System.getProperty("user.home"), ".rex", "REX.md"));
+        appendRexMd(sb, workspace.primaryRoot().resolve(".rex").resolve("REX.md"));
+        return sb.toString().strip();
+    }
+
+    private void appendRexMd(StringBuilder sb, Path rexMd) {
+        if (!Files.isRegularFile(rexMd)) return;
+        try {
+            String content = Files.readString(rexMd).strip();
+            if (content.isEmpty()) return;
+            if (sb.length() > 0) sb.append("\n\n---\n\n");
+            sb.append(content);
+        } catch (IOException ignored) {
+            // best-effort — an unreadable REX.md just means "no memory from this scope"
+        }
     }
 
     /**
@@ -635,8 +703,8 @@ public class CliMain implements CommandLineRunner {
      * {@code ~/.rex/marketplaces/*} and {@code <project>/.rex/marketplaces/*} — one entry per
      * installed plugin's resolved version directory (not one per marketplace — see
      * {@link PluginCacheInstaller#resolveCurrent}). {@code plugins/} is deliberately NOT scanned
-     * here — see §6.3 of the design doc; it's just what {@code /plugin install} reads sources
-     * from, not something that's ever auto-loaded. Project scope listed before user scope so
+     * here — it's just what {@code /plugin install} reads sources from, not something that's ever
+     * auto-loaded. Project scope listed before user scope so
      * {@code DefaultPluginManager}'s "first-scanned wins" duplicate-id skip favors the
      * project-level plugin (matches the existing
      * DefaultPluginManagerManifestCompatTest#duplicatePluginIdAcrossDirectoriesShouldSkipInsteadOfThrow
@@ -859,6 +927,7 @@ public class CliMain implements CommandLineRunner {
                           At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
                           After Ctrl+C pauses a task, type /resume to resume it.
                           Resume a paused task by restarting with: rex --resume <session-name>
+                          Continue the most recent session (no name needed): rex --continue
                         """);
                 out.flush();
             }
@@ -1067,8 +1136,8 @@ public class CliMain implements CommandLineRunner {
                 try {
                     PluginCacheInstaller.InstallResult result = pluginCacheInstaller.install(source, marketplaceRoot);
                     String globalId = result.pluginId() + "@" + marketplaceName;
-                    // Explicit, even though undeclared already defaults to enabled (§6.5) — makes
-                    // enabled.yml a readable record of "this came in via install".
+                    // Explicit, even though an undeclared plugin already defaults to enabled —
+                    // makes enabled.yml a readable record of "this came in via install".
                     enabledStateWriter.setEnabled(enabledYml, globalId, true);
                     out.printf("  Installed %s (hash %s)%s -> %s%n", globalId, result.hash(),
                             result.alreadyPresent() ? " [already cached]" : "", result.installedPath());
@@ -1138,9 +1207,8 @@ public class CliMain implements CommandLineRunner {
                                 enabled ? "" : "  (disabled)");
                     }
                     // Conflict check runs against marketplaces/*/cache/ AND skills/ together — a
-                    // bare skill and a marketplace plugin sharing a pluginId collide too (§3 item 5
-                    // of the naming design doc), even though skills/ isn't itself listed above as
-                    // an "installed plugin".
+                    // bare skill and a marketplace plugin sharing a pluginId collide too, even
+                    // though skills/ isn't itself listed above as an "installed plugin".
                     warnDuplicatePluginIds(out, listAllPluginIdSourcesForConflictCheck(ctx.getWorkspace(), config));
                 }
                 out.flush();
@@ -1167,7 +1235,7 @@ public class CliMain implements CommandLineRunner {
     }
 
     /**
-     * Same USER-then-PROJECT merge {@code buildAgent()}'s {@code withEnabledState} call uses (§6.5) —
+     * Same USER-then-PROJECT merge {@code buildAgent()}'s {@code withEnabledState} call uses —
      * kept in one place so {@code /plugin list} can never show a different "enabled" answer than
      * what actually gets applied at agent build time.
      */

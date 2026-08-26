@@ -46,6 +46,12 @@ public class RexConfig {
         private int maxRounds = 10;
         private int maxAgentIterations = 20;
         private int sessionBufferSize = 10;
+        /**
+         * Trigger threshold for the default (periodic/batch) session-memory compaction strategy:
+         * once this many raw turns accumulate, they're compressed into the summary in one LLM
+         * call and the buffer clears.
+         */
+        private int sessionCompactPeriod = 20;
         private int contextWindowSize = 8;
     }
 

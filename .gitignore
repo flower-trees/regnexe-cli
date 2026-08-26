@@ -43,13 +43,14 @@ build/
 AGENTS.md
 
 ### rex runtime data ###
-# .rex/ mixes declared content meant to be committed (enabled.yml, skills/,
+# .rex/ mixes declared content meant to be committed (enabled.yml, REX.md, skills/,
 # marketplaces/*/plugins/ — mirrors package.json vs node_modules) with local/derived content:
 # config.yml may hold secrets, marketplaces/*/cache/ is install-time binary content synced from
 # plugins/ by `/plugin install`. Only the latter stays ignored, so project scope's declared parts
 # are actually shareable via git.
 .rex/*
 !.rex/enabled.yml
+!.rex/REX.md
 !.rex/skills/
 !.rex/marketplaces/
 .rex/marketplaces/*/cache/
