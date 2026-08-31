@@ -203,6 +203,7 @@ public class CliMain implements CommandLineRunner {
                   rex [--session <name>]
                   rex --continue | -c        continue the most recently used session
                   rex --resume <session-id>  resume a paused task in that session
+                  rex --force-resume <id>    also resume a FAILED task (use once its actual cause is fixed)
                   rex --help
                   rex --version
 
@@ -262,9 +263,10 @@ public class CliMain implements CommandLineRunner {
     public void run(String... args) throws Exception {
         RexConfig config = RexConfig.load();
 
-        // Parse --session / --resume / --continue arguments
+        // Parse --session / --resume / --force-resume / --continue arguments
         String sessionArg = null;
         String resumeArg = null;
+        boolean forceResume = false;
         boolean continueArg = false;
         for (int i = 0; i < args.length; i++) {
             if ("--session".equals(args[i]) && i + 1 < args.length) {
@@ -272,6 +274,15 @@ public class CliMain implements CommandLineRunner {
             } else if ("--resume".equals(args[i]) && i + 1 < args.length) {
                 resumeArg = args[i + 1];
                 // --resume implies --session with the same name
+                if (sessionArg == null) sessionArg = resumeArg;
+            } else if ("--force-resume".equals(args[i]) && i + 1 < args.length) {
+                // Same as --resume, but also considers a FAILED task (one the harness itself gave
+                // up on — a real error, not just an interrupted PAUSED one) eligible — for when
+                // the actual cause has been fixed since (billing topped up, model config switched
+                // to a working vendor). See TaskStore.listResumable's javadoc for the reasoning
+                // behind why this isn't the default.
+                resumeArg = args[i + 1];
+                forceResume = true;
                 if (sessionArg == null) sessionArg = resumeArg;
             } else if ("--continue".equals(args[i]) || "-c".equals(args[i])) {
                 continueArg = true;
@@ -366,14 +377,17 @@ public class CliMain implements CommandLineRunner {
         renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
         if (dbWarning != null) renderer.warning(dbWarning);
 
-        // --resume: kick off the paused task immediately before entering the REPL loop
+        // --resume / --force-resume: kick off the paused (or FAILED, if forced) task immediately
+        // before entering the REPL loop
         if (resumeArg != null) {
-            out.printf("Resuming paused task for session: %s%n%n", ctx.getSessionName());
+            final boolean force = forceResume;
+            out.printf(force ? "Force-resuming failed task for session: %s%n%n"
+                              : "Resuming paused task for session: %s%n%n", ctx.getSessionName());
             out.flush();
             try {
                 RegnexeAgent resumeAgent = agent;
                 AgentResult r = runAgentTask(
-                        () -> resumeAgent.resume(ctx.getSessionName(), null),
+                        () -> resumeAgent.resume(ctx.getSessionName(), null, force),
                         ctx,
                         out,
                         executing,
@@ -703,12 +717,34 @@ public class CliMain implements CommandLineRunner {
      */
     private static BaseChatModel buildSummarizerModel(RexConfig config) {
         try {
+            String model = config.effectiveModel();
             return new DefaultModelProvider().provide(
-                    ModelSpec.of(config.getModel().getVendor(), config.effectiveModel()));
+                    ModelSpec.of(config.getModel().getVendor(), model, deepseekThinkingKwargs(model)));
         } catch (Exception e) {
             log.warn("Could not build a summarizer model ({}); SlidingWindowContext will fall back to plain-text concatenation for compressed steps.", e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * DeepSeek models default to "thinking" (chain-of-thought) mode on for every call — verified
+     * directly against both {@code api.deepseek.com} (vendor deepseek) and DashScope's
+     * compatible-mode endpoint (vendor aliyun, e.g. {@code deepseek-v4-flash-0731}/
+     * {@code deepseek-v4-pro-0813} — Aliyun hosts DeepSeek-family models under their own dated
+     * names): the response's {@code reasoning_content} field is populated unless the request
+     * explicitly disables it. That reasoning text isn't shown to the user but is real, billed
+     * output tokens on every Plan/Execute/Reflect call — for Execute in particular (a
+     * multi-iteration ReAct loop), it compounds into real added latency per tool-call round-trip.
+     * {@code thinking: {type: "disabled"}} is the parameter that actually turns it off (confirmed
+     * empirically on both endpoints above — {@code enable_thinking: false}, the qwen3 convention,
+     * does NOT work for deepseek). Keyed off the MODEL name rather than vendor: what determines
+     * whether this parameter is recognized is which underlying model is actually answering, not
+     * which vendor's endpoint the request happens to go through — a deepseek-family model hosted
+     * via aliyun still needs (and still honors) the same override a direct deepseek call does.
+     */
+    private static java.util.Map<String, Object> deepseekThinkingKwargs(String model) {
+        if (model == null || !model.toLowerCase().startsWith("deepseek-")) return null;
+        return java.util.Map.of("thinking", java.util.Map.of("type", "disabled"));
     }
 
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
@@ -717,7 +753,8 @@ public class CliMain implements CommandLineRunner {
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
         var builder = agentBuilder
-                .withDefaultModel(config.getModel().getVendor(), config.effectiveModel())
+                .withDefaultModel(config.getModel().getVendor(), config.effectiveModel(),
+                        deepseekThinkingKwargs(config.effectiveModel()))
                 .withEventListener(new CliEventListener(renderer))
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
@@ -745,11 +782,13 @@ public class CliMain implements CommandLineRunner {
         // see wireRoleApiKey().
         String plannerName = config.getModel().getPlannerName();
         if (plannerName != null && !plannerName.isBlank()) {
-            builder = builder.withPlannerModel(config.effectivePlannerVendor(), plannerName);
+            builder = builder.withPlannerModel(config.effectivePlannerVendor(), plannerName,
+                    deepseekThinkingKwargs(plannerName));
         }
         String reflectorName = config.getModel().getReflectorName();
         if (reflectorName != null && !reflectorName.isBlank()) {
-            builder = builder.withReflectorModel(config.effectiveReflectorVendor(), reflectorName);
+            builder = builder.withReflectorModel(config.effectiveReflectorVendor(), reflectorName,
+                    deepseekThinkingKwargs(reflectorName));
         }
 
         // MCP servers (direct + Plugin-carried, see connectMcpServers()).

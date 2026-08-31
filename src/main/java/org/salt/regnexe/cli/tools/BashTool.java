@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class BashTool {
@@ -43,6 +44,49 @@ public class BashTool {
 
     // Matches N>/dev/null and >/dev/null (stderr/stdout suppression) — not a write operation.
     private static final Pattern NULL_REDIRECT = Pattern.compile("\\d*>\\s*/dev/null");
+
+    // Heuristic workspace-boundary check, same spirit/rigor as ALWAYS_BLOCKED/extra_blocked
+    // above: a substring/regex check, not a real OS-level sandbox — a determined adversarial
+    // prompt could still route around it (e.g. a path hidden inside a Python string literal
+    // rather than a bare shell token). It exists to catch an honest-but-confused model wandering
+    // outside the project, which is the actual failure mode observed twice in real use: `cd` to
+    // an unrelated sibling project directory, and `find /` turning up an unrelated task's leftover
+    // files elsewhere on disk. Unlike read_file/list_files (which already enforce this via
+    // WorkspaceContext.resolve()), bash had no boundary at all before this.
+    private static final Pattern ABS_PATH_TOKEN =
+            Pattern.compile("(?<![\\w./:-])(/[\\w./-]*|~(?:/[\\w./-]*)?)");
+
+    // Absolute paths under these prefixes are left alone even though they're outside the
+    // workspace: standard system/tool locations (needed for things like `2>/dev/null` or a shell
+    // resolving `/usr/bin/env`) and scratch temp dirs (writing a throwaway file to /tmp is normal
+    // and not itself the problem — the problem is treating something found by searching *all* of
+    // / as if it were part of this project).
+    private static final List<String> SAFE_ABSOLUTE_PREFIXES = List.of(
+        "/dev/", "/bin/", "/sbin/", "/usr/", "/opt/", "/etc/", "/System/", "/Library/",
+        "/private/etc/", "/private/tmp/", "/private/var/folders/", "/tmp/", "/var/folders/"
+    );
+
+    /** Returns the first out-of-workspace absolute path token found, or null if the command is clean. */
+    private static String findWorkspaceEscape(String command, WorkspaceContext workspace) {
+        Matcher m = ABS_PATH_TOKEN.matcher(command);
+        while (m.find()) {
+            String token = m.group(1);
+            // "~" resolves to $HOME (a shell expansion), which WorkspaceContext.resolve() can't
+            // see: Path.of("~") isn't absolute, so it would otherwise be silently (and wrongly)
+            // treated as a relative path inside the workspace. The workspace root is always some
+            // subdirectory of home, never home itself, so any ~-prefixed token is an escape.
+            if (token.equals("~") || token.startsWith("~/")) {
+                return token;
+            }
+            if (SAFE_ABSOLUTE_PREFIXES.stream().anyMatch(token::startsWith)) continue;
+            try {
+                workspace.resolve(token);
+            } catch (SecurityException e) {
+                return token;
+            }
+        }
+        return null;
+    }
 
     private static final List<String> ALWAYS_BLOCKED = List.of(
         "rm -rf /",
@@ -92,6 +136,12 @@ public class BashTool {
                                 return "Error: command blocked by config (contains \"" + blocked + "\")";
                             }
                         }
+                    }
+                    String escapedPath = findWorkspaceEscape(command, workspace);
+                    if (escapedPath != null) {
+                        return "Error: command references a path outside the workspace (" + escapedPath
+                                + "). Stay within " + workspace.primaryRoot()
+                                + " — if you genuinely need something outside it, tell the user instead of reaching for it directly.";
                     }
 
                     PrintWriter out = terminal.writer();
