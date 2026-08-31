@@ -16,8 +16,15 @@ public interface CliRenderer {
     void filePreview(String path, String content, boolean isNew);
     /** Preview shown before an edit_file confirmation: the target path and the replaced text. */
     void editPreview(String path, String oldString, String newString);
-    /** Asks the user to confirm an action described by {@code verb} (e.g. "run", "apply"). */
-    ConfirmChoice confirm(String verb);
+    /** Preview shown before an MCP tool-call confirmation: which server/tool and the arguments. */
+    void mcpToolPreview(String server, String tool, Object args);
+    /**
+     * Asks the user to confirm an action described by {@code verb} (e.g. "run", "apply").
+     * {@code rememberKey} identifies what an ALWAYS answer applies to (e.g. a tool name) — once
+     * the user picks ALWAYS for a given key, later calls with the same key skip the prompt and
+     * return YES directly, for the rest of this process (not persisted to disk).
+     */
+    ConfirmChoice confirm(String verb, String rememberKey);
     void tokenSummary(String json);
     void interruptPausing();
     void secondInterrupt();

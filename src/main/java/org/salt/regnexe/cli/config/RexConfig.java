@@ -38,6 +38,48 @@ public class RexConfig {
         private String vendor = "deepseek";
         private String name = "deepseek-v4-pro";
         private String apiKey;
+        /**
+         * Chat-completions endpoint URL. Only meaningful for {@code vendor: custom} (any
+         * OpenAI-Chat-Completions-compatible endpoint not covered by a named vendor —
+         * OpenRouter, Together, Groq, a self-hosted server, a corporate gateway); every named
+         * vendor already has its own built-in URL and ignores this field. Unlike every other
+         * vendor, "custom" has no sensible default endpoint to fall back to, so this is
+         * effectively required when vendor is custom — see CliMain's startup wiring
+         * (models.custom.chat-url) and j-langchain's CustomActuator.
+         */
+        private String chatUrl;
+        /**
+         * Optional per-role model override: run TaskPlanner's planning call on a different
+         * model than Execute (which stays on {@code name}) — e.g. a pricier/stronger tier for
+         * the low-volume Plan/Reflect judgment calls, a cheaper one for the tool-calling loop
+         * whose cost scales with iteration count. Unset means Planner uses the main model too.
+         */
+        private String plannerName;
+        /**
+         * Optional vendor override for {@link #plannerName} — set this when Planner should run
+         * on a genuinely different vendor, not just a different tier of the same one (e.g. a
+         * stronger model only available elsewhere). Defaults to the main {@link #vendor} when
+         * {@link #plannerName} is set but this isn't.
+         */
+        private String plannerVendor;
+        /**
+         * Optional API key for {@link #plannerVendor}. Only meaningful when plannerVendor names
+         * a genuinely different vendor than the main one — defaults to the main {@link #apiKey}
+         * otherwise (same vendor implies the same key works). Resolved the same
+         * {@code ${ENV_VAR}} way as {@link #apiKey}.
+         */
+        private String plannerApiKey;
+        /**
+         * Optional per-role model override for Reflector's FINISH/CONTINUE/ESCALATE judgment —
+         * see {@link #plannerName}. A wrong FINISH verdict is a one-way door (the task ends, no
+         * later round can catch it), unlike a Planner or Execute mistake, so judgment quality
+         * here has outsized leverage relative to this call's own small cost.
+         */
+        private String reflectorName;
+        /** Optional vendor override for {@link #reflectorName} — see {@link #plannerVendor}. */
+        private String reflectorVendor;
+        /** Optional API key for {@link #reflectorVendor} — see {@link #plannerApiKey}. */
+        private String reflectorApiKey;
     }
 
     @Data
@@ -45,6 +87,14 @@ public class RexConfig {
     public static class AgentConfig {
         private int maxRounds = 10;
         private int maxAgentIterations = 20;
+        /**
+         * Caps consecutive tool-call failures before a round aborts early with a diagnostic,
+         * instead of grinding through the rest of maxAgentIterations retrying the same broken
+         * dependency (e.g. a real external API repeatedly rejecting credentials). 0 disables the
+         * check (j-langchain's own default) — set here because regnexe never wired this through
+         * before, so it silently ran disabled regardless of what a project configured.
+         */
+        private int maxConsecutiveToolFailures = 5;
         private int sessionBufferSize = 10;
         /**
          * Trigger threshold for the default (periodic/batch) session-memory compaction strategy:
@@ -154,5 +204,43 @@ public class RexConfig {
         String fromEnv = System.getenv("REX_MODEL");
         if (fromEnv != null && !fromEnv.isBlank()) return fromEnv;
         return model.getName();
+    }
+
+    /** Effective vendor for the Planner role — plannerVendor, falling back to the main vendor. */
+    public String effectivePlannerVendor() {
+        String v = model.getPlannerVendor();
+        return v != null && !v.isBlank() ? v : model.getVendor();
+    }
+
+    /**
+     * Effective API key for the Planner role. Only falls back to the main {@link #effectiveApiKey()}
+     * when plannerVendor is unset or matches the main vendor — a genuinely different
+     * plannerVendor with no plannerApiKey of its own is very likely a real misconfiguration
+     * (that vendor's real key almost never happens to also be a valid key for the main vendor),
+     * so surfacing null lets the caller warn instead of silently sending the wrong vendor's key.
+     */
+    public String effectivePlannerApiKey() {
+        String k = model.getPlannerApiKey();
+        if (k != null && !k.isBlank()) return k;
+        String plannerVendor = model.getPlannerVendor();
+        boolean sameVendor = plannerVendor == null || plannerVendor.isBlank()
+                || plannerVendor.equalsIgnoreCase(model.getVendor());
+        return sameVendor ? effectiveApiKey() : null;
+    }
+
+    /** Effective vendor for the Reflector role — see {@link #effectivePlannerVendor()}. */
+    public String effectiveReflectorVendor() {
+        String v = model.getReflectorVendor();
+        return v != null && !v.isBlank() ? v : model.getVendor();
+    }
+
+    /** Effective API key for the Reflector role — see {@link #effectivePlannerApiKey()}. */
+    public String effectiveReflectorApiKey() {
+        String k = model.getReflectorApiKey();
+        if (k != null && !k.isBlank()) return k;
+        String reflectorVendor = model.getReflectorVendor();
+        boolean sameVendor = reflectorVendor == null || reflectorVendor.isBlank()
+                || reflectorVendor.equalsIgnoreCase(model.getVendor());
+        return sameVendor ? effectiveApiKey() : null;
     }
 }

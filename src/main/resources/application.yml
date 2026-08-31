@@ -17,12 +17,15 @@ models:
 logging:
   level:
     root: WARN
-    # Suppress framework-internal WARNs that are expected and benign:
-    # - CapabilityExecutor: warns when planner hallucinates a capability ID that
-    #   doesn't exist (common with empty tool registry; execution falls back to LLM)
-    # - TaskPlanner: warns on occasional LLM JSON parse hiccups (auto-repaired)
+    # - TaskPlanner: warns on occasional LLM JSON parse hiccups (auto-repaired) — still suppressed.
+    # - CapabilityExecutor's "Capability not found: <id>" WARN used to be suppressed here too, on
+    #   the assumption it was benign ("planner hallucinates an id, falls back to LLM"). It isn't
+    #   always: a real, previously-silent id-mismatch bug (see FlatSkillLoader.loadOne) made this
+    #   fire on every natural-language selection of a flat skill, silently stripping that round of
+    #   both its skill instructions and its tools. Left visible at WARN so a recurrence surfaces
+    #   immediately instead of masquerading as "the model just isn't calling tools".
     org.salt.regnexe.agent.core: ERROR
-    org.salt.regnexe.agent.core.task.worker: ERROR
+    org.salt.regnexe.agent.core.task.worker: WARN
     org.salt.regnexe.agent.core.RegnexeAgent: ERROR
     org.salt.jlangchain: ERROR
     org.salt.function.flow.context.ContextBus: ERROR

@@ -99,12 +99,14 @@ public class BashTool {
 
                     boolean needsConfirm = config.isRequireConfirmation() && !isReadOnly(command);
                     if (needsConfirm) {
-                        ConfirmChoice choice = renderer.confirm("run");
+                        ConfirmChoice choice = renderer.confirm("run", "bash");
                         if (choice == ConfirmChoice.PAUSE) {
                             if (pauseAction != null) pauseAction.run();
                             return "Task paused by user.";
                         }
-                        if (choice != ConfirmChoice.YES) return "Command cancelled by user.";
+                        if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
+                            return "Command cancelled by user.";
+                        }
                     } else {
                         out.flush();
                     }

@@ -9,11 +9,20 @@ import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.salt.jlangchain.core.history.HistoryInfos;
 import org.salt.jlangchain.core.agent.memory.SlidingWindowContext;
+import org.salt.jlangchain.core.llm.BaseChatModel;
 import org.salt.jlangchain.core.message.BaseMessage;
 import org.salt.jlangchain.core.message.MessageType;
+import org.salt.jlangchain.rag.tools.Tool;
+import org.salt.jlangchain.rag.tools.mcp.McpClient;
+import org.salt.jlangchain.rag.tools.mcp.server.config.McpConfig;
+import org.salt.jlangchain.rag.tools.mcp.server.config.ServerConfig;
+import org.salt.jlangchain.rag.tools.mcp.server.param.ServerStatus;
+import org.salt.jlangchain.rag.tools.mcp.tool.ToolDesc;
 import org.salt.regnexe.agent.core.RegnexeAgent;
 import org.salt.regnexe.agent.core.RegnexeAgentBuilder;
 import org.salt.regnexe.agent.core.common.enums.TaskStatus;
+import org.salt.regnexe.agent.core.llm.DefaultModelProvider;
+import org.salt.regnexe.agent.core.llm.ModelSpec;
 import org.salt.regnexe.agent.core.marketplace.capability.CapabilityDescriptor;
 import org.salt.regnexe.agent.core.marketplace.capability.CapabilityType;
 import org.salt.regnexe.agent.core.marketplace.loader.PluginCacheInstaller;
@@ -36,10 +45,12 @@ import org.salt.regnexe.cli.session.SessionContext;
 import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
 import org.salt.regnexe.cli.tools.FileTools;
+import org.salt.regnexe.cli.tools.McpTools;
 import org.salt.regnexe.cli.tools.WorkspaceContext;
 import org.salt.regnexe.cli.ui.CliRenderer;
 import org.salt.regnexe.cli.ui.TerminalCliRenderer;
 import org.salt.regnexe.cli.ui.ThemeConfig;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
@@ -73,9 +84,12 @@ import java.util.concurrent.atomic.AtomicReference;
 @SpringBootApplication
 public class CliMain implements CommandLineRunner {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CliMain.class);
+
     static final String VERSION = "0.1.0";
 
-    private static final String DEFAULT_SESSION = "default";
+    /** Prefix for auto-generated session names — see {@link #generateSessionName()}. */
+    private static final String SESSION_NAME_PREFIX = "session";
 
     @Autowired
     private RegnexeAgentBuilder agentBuilder;
@@ -87,6 +101,13 @@ public class CliMain implements CommandLineRunner {
     private final EnabledStateLoader enabledStateLoader = new EnabledStateLoader();
     private final EnabledStateWriter enabledStateWriter = new EnabledStateWriter();
     private final ScopeResolver scopeResolver = new ScopeResolver();
+
+    // The MCP client currently backing the running agent's MCP-sourced tools — both directly
+    // configured (.rex/mcp.json) and Plugin-carried (<plugin-dir>/mcp.json) servers connect
+    // through this one client. Holds real OS resources (child processes for stdio servers, open
+    // connections for sse/http), so it must be destroy()ed before buildAgent() replaces it with a
+    // fresh one, and on process exit.
+    private McpClient activeMcpClient;
 
     public static void main(String[] args) {
         if (hasArg(args, "--help") || hasArg(args, "-h")) {
@@ -107,10 +128,64 @@ public class CliMain implements CommandLineRunner {
                 System.setProperty(prop, apiKey);
             }
         }
+        // Wire planner_api_key / reflector_api_key too, in case those roles run on a genuinely
+        // different vendor than the main model (see RexConfig.ModelConfig.plannerVendor javadoc)
+        // — each needs its OWN vendor's key system-property set, not just the main model's.
+        // effectivePlannerApiKey()/effectiveReflectorApiKey() already fall back to the main key
+        // when the role's vendor matches the main one, so this is a no-op (re-sets the same
+        // property to the same value) in the common same-vendor case.
+        wireRoleApiKey("planner", preConfig.effectivePlannerVendor(), preConfig.effectivePlannerApiKey(),
+                preConfig.getModel().getPlannerVendor());
+        wireRoleApiKey("reflector", preConfig.effectiveReflectorVendor(), preConfig.effectiveReflectorApiKey(),
+                preConfig.getModel().getReflectorVendor());
+
+        // Wire model.chat_url from config → Spring @Value the same way, for any vendor. Every
+        // vendor actuator already exposes its URL as "models.<vendor>.chat-url" with its real
+        // endpoint as the @Value default (see j-langchain's *Actuator classes), so this works
+        // generically — not just for vendor: custom (CustomActuator, whose chat-url has no
+        // default at all and is the main reason this exists: pointing at an arbitrary
+        // OpenAI-Chat-Completions-compatible endpoint like OpenRouter/Together/a self-hosted
+        // server), but also to redirect any named vendor at a compatible proxy/mirror/regional
+        // endpoint if a user ever needs that.
+        String chatUrl = preConfig.getModel().getChatUrl();
+        if (chatUrl != null && !chatUrl.isBlank()) {
+            String urlProp = chatUrlPropFor(preConfig.getModel().getVendor());
+            if (urlProp != null) {
+                System.setProperty(urlProp, chatUrl);
+            }
+        }
 
         SpringApplication app = new SpringApplication(CliMain.class);
         app.setWebApplicationType(WebApplicationType.NONE);
         app.run(args);
+    }
+
+    /**
+     * Sets the vendor's key system property for a Planner/Reflector role override, warning
+     * instead of silently sending no key (or the wrong vendor's) when the user configured a
+     * genuinely different vendor for this role but forgot its own {@code <role>_api_key}.
+     *
+     * @param roleLabel        "planner" or "reflector", for the warning message only
+     * @param effectiveVendor  the role's resolved vendor (falls back to the main vendor when unset)
+     * @param effectiveApiKey  the role's resolved key ({@code null} if a different vendor has no key of its own)
+     * @param configuredVendorOverride the raw {@code <role>_vendor} config value, or null/blank if not set
+     */
+    private static void wireRoleApiKey(String roleLabel, String effectiveVendor, String effectiveApiKey,
+                                        String configuredVendorOverride) {
+        if (effectiveApiKey != null && !effectiveApiKey.isBlank()) {
+            String prop = apiKeyPropFor(effectiveVendor);
+            if (prop != null) {
+                System.setProperty(prop, effectiveApiKey);
+            }
+            return;
+        }
+        if (configuredVendorOverride != null && !configuredVendorOverride.isBlank()) {
+            System.err.printf(
+                    "[warn] model.%s_vendor is set to '%s' but model.%s_api_key is empty — "
+                    + "%s will likely fail to authenticate unless %s is already set another way "
+                    + "(env var, -D system property).%n",
+                    roleLabel, configuredVendorOverride, roleLabel, roleLabel, vendorKeyEnvName(effectiveVendor));
+        }
     }
 
     private static boolean hasArg(String[] args, String expected) {
@@ -152,6 +227,7 @@ public class CliMain implements CommandLineRunner {
         if (vendor == null) return null;
         return switch (vendor.toLowerCase()) {
             case "aliyun"            -> envName ? "ALIYUN_KEY"   : "models.aliyun.chat-key";
+            case "custom"            -> envName ? "CUSTOM_KEY"   : "models.custom.chat-key";
             case "deepseek"          -> envName ? "DEEPSEEK_KEY" : "models.deepseek.chat-key";
             case "doubao"            -> envName ? "DOUBAO_KEY"   : "models.doubao.chat-key";
             case "hunyuan"           -> envName ? "HUNYUAN_KEY"  : "models.hunyuan.chat-key";
@@ -164,6 +240,22 @@ public class CliMain implements CommandLineRunner {
             case "zhipu"             -> envName ? "ZHIPU_KEY"    : "models.zhipu.chat-key";
             default                  -> null;
         };
+    }
+
+    /**
+     * Maps vendor name → j-langchain Spring property key for chat-url override. Unlike
+     * {@link #apiKeyMapFor}, this is a single formula rather than a per-vendor switch: every
+     * vendor actuator already exposes its URL as {@code models.<vendor>.chat-url} (confirmed
+     * against every {@code *Actuator} class in j-langchain — chat-url is always that exact
+     * property name, just with each vendor's real endpoint as the default), so no per-vendor
+     * table is needed. Only the "openai" CLI vendor name is special-cased: it maps to
+     * {@code ChatGPTActuator}, whose Spring property prefix is the older "chatgpt", not "openai"
+     * (see {@link #apiKeyMapFor}'s "openai", "chatgpt" case for the same alias).
+     */
+    private static String chatUrlPropFor(String vendor) {
+        if (vendor == null) return null;
+        String key = "openai".equalsIgnoreCase(vendor) ? "chatgpt" : vendor.toLowerCase();
+        return "models." + key + ".chat-url";
     }
 
     @Override
@@ -186,9 +278,16 @@ public class CliMain implements CommandLineRunner {
             }
         }
 
+        // Deliberately NOT forcing .dumb(true): dumb mode skips proper raw-mode terminal-driver
+        // cooperation, so output written from the agent's background worker thread (status
+        // events like "Ready"/"Executing...", dispatched concurrently with the main thread's
+        // interactive readLine() below) can bleed into the next readLine() call as if it had
+        // been typed — observed for real as spurious follow-up tasks whose "goal" was literally
+        // the CLI's own last-printed status line or an internal [SYSTEM NOTICE] string.
+        // .system(true) alone lets JLine auto-detect real terminal capabilities and only fall
+        // back to dumb mode itself when the terminal genuinely isn't a TTY (piped/CI usage).
         Terminal terminal = TerminalBuilder.builder()
                 .system(true)
-                .dumb(true)
                 .build();
 
         Path historyFile = Path.of(System.getProperty("user.home"), ".rex", "history");
@@ -217,6 +316,15 @@ public class CliMain implements CommandLineRunner {
             dbWarning = "SQLite unavailable, falling back to in-memory: " + e.getMessage();
             db = null;
         }
+
+        // MCP connections (stdio child processes, sse/http sockets) must be torn down on exit —
+        // otherwise a stdio server's child process outlives the CLI. Independent of the db hook
+        // above (registered even when SQLite is unavailable).
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (activeMcpClient != null) {
+                try { activeMcpClient.destroy(); } catch (Exception ignored) {}
+            }
+        }, "rex-mcp-shutdown"));
 
         // AtomicReference lets the pauseAction lambda always call the most recent agent instance,
         // even after /switch rebuilds the agent.
@@ -406,19 +514,41 @@ public class CliMain implements CommandLineRunner {
 
     // ── Session resolution ────────────────────────────────────────────────────
 
+    /**
+     * Generates a name for a fresh implicit session — {@code session-<yyyyMMdd-HHmmss>-<4 hex>}.
+     * There is no more single shared "default" session: every launch without an explicit {@code
+     * --session <name>} gets its own brand-new one, named on the spot. This is what keeps a
+     * session's stored working_dir trustworthy without ever needing to silently rewrite it later —
+     * a fresh session's working_dir is simply wherever it was just created, always correct by
+     * construction. The trailing hex suffix guards the (very unlikely) case of two launches in the
+     * same second; {@code name} is UNIQUE in the sessions table.
+     */
+    private static String generateSessionName() {
+        String ts = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String suffix = UUID.randomUUID().toString().substring(0, 4);
+        return SESSION_NAME_PREFIX + "-" + ts + "-" + suffix;
+    }
+
     private SessionContext resolveSession(String nameArg, RexConfig config, RexDatabase db) {
-        String sessionName = (nameArg != null && !nameArg.isBlank()) ? nameArg : DEFAULT_SESSION;
+        boolean explicit = nameArg != null && !nameArg.isBlank();
+        String launchDir = System.getProperty("user.dir");
+        String sessionName = explicit ? nameArg : generateSessionName();
         if (db == null) {
-            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            WorkspaceContext ws = buildWorkspaceFor(launchDir, config);
             return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
         }
         try {
-            SessionRow row = db.findSessionByName(sessionName).orElse(null);
+            // An explicit --session <name> may legitimately be reused across launches (that's the
+            // whole point of naming one) — find-or-create, same as /switch. An implicit launch
+            // always creates a fresh session (see generateSessionName()), so this lookup is
+            // skipped entirely and row is always null.
+            SessionRow row = explicit ? db.findSessionByName(sessionName).orElse(null) : null;
             if (row == null) {
                 row = new SessionRow();
                 row.setSessionId(UUID.randomUUID().toString());
                 row.setName(sessionName);
-                row.setWorkingDir(System.getProperty("user.dir"));
+                row.setWorkingDir(launchDir);
                 row.setModel(config.effectiveModel());
                 long now = System.currentTimeMillis();
                 row.setCreatedAt(now);
@@ -429,7 +559,7 @@ public class CliMain implements CommandLineRunner {
             return new SessionContext(row.getSessionId(), row.getName(), ws);
         } catch (SQLException e) {
             System.err.println("[warn] Session DB error: " + e.getMessage());
-            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
+            WorkspaceContext ws = buildWorkspaceFor(launchDir, config);
             return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
         }
     }
@@ -439,13 +569,13 @@ public class CliMain implements CommandLineRunner {
      * needing to remember its name. Deliberately does NOT touch Task-level resume ({@code
      * --resume <name>} stays the only way to trigger that) — this only re-attaches Session memory
      * (Layer 1), same as if the caller had typed {@code --session <that name>} themselves. No
-     * sessions yet (fresh install) falls back to the same default-session bootstrap as a bare,
+     * sessions yet (fresh install) falls back to the same fresh-session bootstrap as a bare,
      * no-flags launch.
      */
     private SessionContext resolveMostRecentSession(RexConfig config, RexDatabase db) {
         if (db == null) {
             WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
-            return new SessionContext(UUID.randomUUID().toString(), DEFAULT_SESSION, ws);
+            return new SessionContext(UUID.randomUUID().toString(), generateSessionName(), ws);
         }
         try {
             List<SessionRow> sessions = db.listSessions(); // ORDER BY updated_at DESC
@@ -458,7 +588,7 @@ public class CliMain implements CommandLineRunner {
         } catch (SQLException e) {
             System.err.println("[warn] Session DB error: " + e.getMessage());
             WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
-            return new SessionContext(UUID.randomUUID().toString(), DEFAULT_SESSION, ws);
+            return new SessionContext(UUID.randomUUID().toString(), generateSessionName(), ws);
         }
     }
 
@@ -552,6 +682,35 @@ public class CliMain implements CommandLineRunner {
 
     // ── Agent factory ────────────────────────────────────────────────────────
 
+    /**
+     * Builds the LLM used by {@link SlidingWindowContext} to compress steps that age out of the
+     * window into a real summary, instead of the raw-text concatenation it falls back to when no
+     * summarizer is set. Reuses the session's own configured model — simplest option, and no new
+     * config surface (a second "summarizer model" setting) to add for what's an internal-only
+     * compression step, not something the user watches responses from.
+     * <p>
+     * Real incident this fixes: on a long research-heavy run (89 tool calls, one deepseek
+     * session, default window size 6) with no summarizer wired, {@code news-sources.md} — read
+     * once early on — got re-read from scratch later in the same run. The content technically
+     * stayed in context (raw-concatenated into {@code earlyStepsSummary}), but buried under ~80
+     * un-compressed steps' worth of raw tool output (some of them large Playwright DOM
+     * snapshots), it was easy for the model to lose track of. A real per-step summary keeps that
+     * blob from growing into unstructured noise.
+     * <p>
+     * Returns null (falls back to {@link SlidingWindowContext}'s plain-concatenation behavior)
+     * if the model can't be constructed — e.g. an unrecognized vendor/model string — rather than
+     * fail CLI startup over a compression-quality nicety.
+     */
+    private static BaseChatModel buildSummarizerModel(RexConfig config) {
+        try {
+            return new DefaultModelProvider().provide(
+                    ModelSpec.of(config.getModel().getVendor(), config.effectiveModel()));
+        } catch (Exception e) {
+            log.warn("Could not build a summarizer model ({}); SlidingWindowContext will fall back to plain-text concatenation for compressed steps.", e.getMessage());
+            return null;
+        }
+    }
+
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
                                     CliRenderer renderer,
                                     RexDatabase db, Runnable pauseAction) {
@@ -562,10 +721,12 @@ public class CliMain implements CommandLineRunner {
                 .withEventListener(new CliEventListener(renderer))
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
+                .withMaxConsecutiveToolFailures(ac.getMaxConsecutiveToolFailures())
                 .withSessionBufferSize(ac.getSessionBufferSize())
                 .withSessionCompactPeriod(ac.getSessionCompactPeriod())
                 .withAgentContext(SlidingWindowContext.builder()
                         .windowSize(ac.getContextWindowSize())
+                        .summarizer(buildSummarizerModel(config))
                         .build())
                 .withTool(
                         FileTools.readFile(workspace),
@@ -575,6 +736,35 @@ public class CliMain implements CommandLineRunner {
                         FileTools.editFile(workspace, renderer, pauseAction),
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
                 );
+
+        // Optional per-role model overrides — same vendor as the main model unless
+        // planner_vendor/reflector_vendor names a different one (see
+        // RexConfig.ModelConfig.plannerName/plannerVendor javadoc for why these two roles
+        // specifically are a reasonable place to spend more on a stronger model, possibly on a
+        // different vendor entirely). API keys for a different vendor are wired in main() —
+        // see wireRoleApiKey().
+        String plannerName = config.getModel().getPlannerName();
+        if (plannerName != null && !plannerName.isBlank()) {
+            builder = builder.withPlannerModel(config.effectivePlannerVendor(), plannerName);
+        }
+        String reflectorName = config.getModel().getReflectorName();
+        if (reflectorName != null && !reflectorName.isBlank()) {
+            builder = builder.withReflectorModel(config.effectiveReflectorVendor(), reflectorName);
+        }
+
+        // MCP servers (direct + Plugin-carried, see connectMcpServers()).
+        // Destroy any previously-connected client before replacing it: each holds real OS
+        // resources (stdio child processes, sse/http connections) that must not leak across
+        // rebuilds (e.g. /mcp enable triggering AGENT_REBUILT).
+        if (activeMcpClient != null) {
+            try { activeMcpClient.destroy(); } catch (Exception ignored) {}
+            activeMcpClient = null;
+        }
+        List<Tool> mcpTools = connectMcpServers(workspace, renderer, pauseAction);
+        if (!mcpTools.isEmpty()) {
+            builder = builder.withTool(mcpTools.toArray(new Tool[0]));
+        }
+
         if (db != null) {
             builder = builder.withSessionStorage(new SqliteConversationStorage(db));
             builder = builder.withTaskStore(new SqliteTaskStore(db));
@@ -621,6 +811,129 @@ public class CliMain implements CommandLineRunner {
         }
 
         return builder.build();
+    }
+
+    // ── MCP ──────────────────────────────────────────────────────────────────
+    // Two sources: directly-configured servers (.rex/mcp.json, independent /mcp enable|disable
+    // switch) and Plugin-carried servers (<plugin-dir>/mcp.json, no independent switch — lifecycle
+    // follows the owning plugin's own enable/disable state). Both connect through one shared
+    // McpClient; a Plugin-carried server's internal key and capabilityId prefix is
+    // "<pluginId>_<server>" (not just the bare server name declared in its mcp.json) so two
+    // plugins that happen to use the same internal server name (e.g. both call it "github")
+    // can't collide with each other or with a directly-configured server of the same name.
+
+    /** One MCP server declared inside an installed plugin's own {@code mcp.json}. */
+    private record PluginMcpServer(String internalKey, String pluginGlobalId, ServerConfig config) {}
+
+    /**
+     * Connects every enabled MCP server — direct and Plugin-carried — and adapts each discovered
+     * tool into a confirmation-gated {@link Tool} — see {@link McpTools#forServer}. Stores the
+     * connected client in {@link #activeMcpClient} so {@code /mcp list} can report live status and
+     * so it can be torn down before the next rebuild. Returns an empty list (and connects nothing)
+     * when no server is configured anywhere — the common case for a project that doesn't use MCP
+     * at all shouldn't pay for a McpClient or a temp file.
+     */
+    private List<Tool> connectMcpServers(WorkspaceContext workspace, CliRenderer renderer, Runnable pauseAction) {
+        Map<String, ServerConfig> servers = new LinkedHashMap<>(resolveEnabledMcpServerConfigs(workspace));
+        servers.putAll(resolveEnabledPluginMcpServerConfigs(workspace));
+        if (servers.isEmpty()) return List.of();
+
+        McpConfig mcpConfig = new McpConfig();
+        mcpConfig.mcpServers = servers;
+
+        Path tempConfig;
+        try {
+            tempConfig = Files.createTempFile("rex-mcp-config-", ".json");
+            tempConfig.toFile().deleteOnExit();
+            new ObjectMapper().writeValue(tempConfig.toFile(), mcpConfig);
+        } catch (IOException e) {
+            System.err.println("[warn] Failed to write merged MCP config: " + e.getMessage());
+            return List.of();
+        }
+
+        // McpClient(configPath)'s constructor does the env-var substitution (${VAR} in command/
+        // args/env/url) via its own loadConfig() → processEnvironmentVariables() — that's why the
+        // temp file above is written with the raw, unsubstituted values from mcp.json.
+        McpClient client = new McpClient(tempConfig.toString());
+        this.activeMcpClient = client;
+
+        List<Tool> tools = new ArrayList<>();
+        for (String serverName : servers.keySet()) {
+            // A server that failed to connect just contributes zero tools here (McpClient logs
+            // its own error and omits it from listAllTools()) — one bad server doesn't block the
+            // others, matching McpClient.initializeFromConfig()'s existing per-server try/catch.
+            tools.addAll(McpTools.forServer(client, serverName, serverName, renderer, pauseAction));
+        }
+        return tools;
+    }
+
+    /** {@link #mergeMcpServerConfigs}, filtered to servers not explicitly disabled via {@code <server>@mcp} in enabled.yml — absent means enabled, same convention as plugins. */
+    private Map<String, ServerConfig> resolveEnabledMcpServerConfigs(WorkspaceContext workspace) {
+        Map<String, ServerConfig> merged = mergeMcpServerConfigs(workspace);
+        if (merged.isEmpty()) return merged;
+        Map<String, Boolean> resolvedEnabled = resolveEnabledAcrossScopes(workspace);
+        Map<String, ServerConfig> filtered = new LinkedHashMap<>();
+        merged.forEach((name, cfg) -> {
+            if (resolvedEnabled.getOrDefault(name + "@mcp", true)) filtered.put(name, cfg);
+        });
+        return filtered;
+    }
+
+    /**
+     * Reads {@code ~/.rex/mcp.json} and {@code <project>/.rex/mcp.json} and merges their
+     * {@code mcpServers} maps by server name — project overrides user, same direction as
+     * {@code enabled.yml}'s scope priority. Unfiltered by enabled state (see
+     * {@link #resolveEnabledMcpServerConfigs} for that) — used directly by {@code /mcp list} so
+     * disabled servers still show up (as "disabled", not silently missing).
+     */
+    private Map<String, ServerConfig> mergeMcpServerConfigs(WorkspaceContext workspace) {
+        Map<String, ServerConfig> merged = new LinkedHashMap<>();
+        mergeMcpServersFrom(merged, Path.of(System.getProperty("user.home"), ".rex", "mcp.json"));
+        mergeMcpServersFrom(merged, workspace.primaryRoot().resolve(".rex").resolve("mcp.json"));
+        return merged;
+    }
+
+    private void mergeMcpServersFrom(Map<String, ServerConfig> target, Path mcpJson) {
+        if (!Files.isRegularFile(mcpJson)) return;
+        try {
+            McpConfig cfg = new ObjectMapper().readValue(mcpJson.toFile(), McpConfig.class);
+            if (cfg.mcpServers != null) target.putAll(cfg.mcpServers);
+        } catch (IOException e) {
+            System.err.println("[warn] Failed to parse " + mcpJson + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Every MCP server declared inside any installed plugin's own root-level {@code mcp.json} —
+     * unfiltered by the plugin's enabled state (see {@link #resolveEnabledPluginMcpServerConfigs}
+     * for that), used directly by {@code /mcp list} so a disabled plugin's servers still show up.
+     * {@code internalKey}/capabilityId prefix is {@code <pluginId>_<server>}, scanned in the same
+     * order (and hence the same "first-scanned wins" duplicate-id precedent) as
+     * {@link #listAllInstalledEntriesInScanOrder}.
+     */
+    private List<PluginMcpServer> listPluginMcpServers(WorkspaceContext workspace) {
+        List<PluginMcpServer> result = new ArrayList<>();
+        for (InstalledPluginEntry entry : listAllInstalledEntriesInScanOrder(workspace)) {
+            Path mcpJson = entry.resolvedDir().resolve("mcp.json");
+            if (!Files.isRegularFile(mcpJson)) continue;
+            Map<String, ServerConfig> declared = new LinkedHashMap<>();
+            mergeMcpServersFrom(declared, mcpJson);
+            declared.forEach((serverName, cfg) ->
+                    result.add(new PluginMcpServer(entry.pluginId() + "_" + serverName, entry.globalId(), cfg)));
+        }
+        return result;
+    }
+
+    /** {@link #listPluginMcpServers}, filtered to servers whose owning plugin is enabled — a Plugin-carried server has no independent switch, it's on exactly when its plugin is. */
+    private Map<String, ServerConfig> resolveEnabledPluginMcpServerConfigs(WorkspaceContext workspace) {
+        Map<String, Boolean> resolvedEnabled = resolveEnabledAcrossScopes(workspace);
+        Map<String, ServerConfig> result = new LinkedHashMap<>();
+        for (PluginMcpServer s : listPluginMcpServers(workspace)) {
+            if (resolvedEnabled.getOrDefault(s.pluginGlobalId(), true)) {
+                result.put(s.internalKey(), s.config());
+            }
+        }
+        return result;
     }
 
     /**
@@ -913,6 +1226,7 @@ public class CliMain implements CommandLineRunner {
                           /sessions          list all sessions
                           /switch <name>     switch to a session (creates if new)
                           /clear             clear current session's conversation history
+                          /history [name]    show a session's conversation history (default: current)
                           /add-dir <path>    add a workspace directory for this session
                           /dirs              list all workspace directories
                           /resume            resume the latest paused task in this session
@@ -922,6 +1236,10 @@ public class CliMain implements CommandLineRunner {
                           /plugin uninstall <plugin-id>@<marketplace> [--scope user|project]
                           /plugin enable|disable <plugin-id>@<marketplace> [--scope user|project]
                           /plugin list       list installed plugins (both scopes) with enabled state
+                          /mcp list          list configured MCP servers (direct and Plugin-carried), status, tools
+                          /mcp enable|disable <server-name> [--scope user|project]
+                                             (declare servers in ~/.rex/mcp.json or <project>/.rex/mcp.json;
+                                              a Plugin-carried server has no independent switch — use /plugin instead)
 
                         Pause/Resume:
                           At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
@@ -1048,6 +1366,51 @@ public class CliMain implements CommandLineRunner {
                 out.flush();
             }
 
+            case "/history" -> {
+                if (db == null) {
+                    out.println("  [warn] Database unavailable");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                String targetSession = parts.length > 1 && !parts[1].isBlank()
+                        ? parts[1].trim() : ctx.getSessionName();
+                java.util.List<org.salt.jlangchain.core.history.HistoryInfos> turns;
+                try {
+                    turns = db.loadConversation(targetSession);
+                } catch (Exception e) {
+                    out.println("  [error] " + e.getMessage());
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                if (turns.isEmpty()) {
+                    out.printf("  No conversation history for session '%s' (never resumed, "
+                            + "or the name is misspelled — check /sessions).%n", targetSession);
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                DateTimeFormatter histFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+                out.printf("  === %s (%d turn%s) ===%n", targetSession, turns.size(),
+                        turns.size() == 1 ? "" : "s");
+                for (org.salt.jlangchain.core.history.HistoryInfos turn : turns) {
+                    String when = LocalDateTime
+                            .ofInstant(Instant.ofEpochMilli(turn.getCreatedAt()), ZoneId.systemDefault())
+                            .format(histFmt);
+                    out.printf("  [%s] %s%n", when, turn.getType());
+                    if (turn.getMessages() != null) {
+                        for (org.salt.jlangchain.core.message.BaseMessage msg : turn.getMessages()) {
+                            String content = msg.getContent() != null ? msg.getContent() : "";
+                            if (content.length() > 2000) {
+                                content = content.substring(0, 2000) + "... [truncated, "
+                                        + content.length() + " chars total]";
+                            }
+                            out.printf("    %-10s %s%n", msg.getRole() + ":", content.replace("\n", "\n               "));
+                        }
+                    }
+                    out.println();
+                }
+                out.flush();
+            }
+
             case "/dirs" -> {
                 out.println("  Workspace directories:");
                 out.println(ctx.getWorkspace().describeRoots());
@@ -1075,6 +1438,10 @@ public class CliMain implements CommandLineRunner {
 
             case "/plugin" -> {
                 return handlePluginCommand(parts.length > 1 ? parts[1].trim() : "", out, ctx, config);
+            }
+
+            case "/mcp" -> {
+                return handleMcpCommand(parts.length > 1 ? parts[1].trim() : "", out, ctx);
             }
 
             default -> {
@@ -1221,6 +1588,117 @@ public class CliMain implements CommandLineRunner {
                 out.flush();
                 return SlashResult.CONTINUE;
             }
+        }
+    }
+
+    // ── /mcp list|enable|disable ────────────────────────────────────────────
+    // A separate command family from /plugin, not an alias — same underlying enabled.yml
+    // read/write, but "MCP server" and "Plugin" are different mental models for the user.
+    // enable/disable return AGENT_REBUILT so the next loop iteration re-runs buildAgent(), which
+    // reconnects/disconnects accordingly.
+
+    private SlashResult handleMcpCommand(String args, PrintWriter out, SessionContext ctx) {
+        String[] tokens = args.isBlank() ? new String[0] : args.split("\\s+");
+        if (tokens.length == 0) {
+            out.println("  Usage: /mcp list|enable|disable ...  (type /help for details)");
+            out.flush();
+            return SlashResult.CONTINUE;
+        }
+        String subcmd = tokens[0];
+        Map<String, String> flags = new LinkedHashMap<>();
+        List<String> positional = new ArrayList<>();
+        for (int i = 1; i < tokens.length; i++) {
+            if ("--scope".equals(tokens[i]) && i + 1 < tokens.length) {
+                flags.put("scope", tokens[++i]);
+            } else {
+                positional.add(tokens[i]);
+            }
+        }
+        boolean userScope = "user".equalsIgnoreCase(flags.getOrDefault("scope", "project"));
+        Path rexRoot = userScope
+                ? Path.of(System.getProperty("user.home"), ".rex")
+                : ctx.getWorkspace().primaryRoot().resolve(".rex");
+        Path enabledYml = rexRoot.resolve("enabled.yml");
+
+        switch (subcmd) {
+            case "list" -> {
+                Map<String, ServerConfig> direct = mergeMcpServerConfigs(ctx.getWorkspace());
+                List<PluginMcpServer> pluginServers = listPluginMcpServers(ctx.getWorkspace());
+                if (direct.isEmpty() && pluginServers.isEmpty()) {
+                    out.println("  No MCP servers configured. Add one to ~/.rex/mcp.json, <project>/.rex/mcp.json, or a plugin's own mcp.json.");
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                Map<String, Boolean> resolvedEnabled = resolveEnabledAcrossScopes(ctx.getWorkspace());
+                Map<String, ServerStatus> statuses = activeMcpClient != null
+                        ? activeMcpClient.getServerStatuses() : Map.of();
+                Map<String, List<ToolDesc>> allTools = activeMcpClient != null
+                        ? activeMcpClient.listAllTools() : Map.of();
+                for (String name : direct.keySet()) {
+                    boolean enabled = resolvedEnabled.getOrDefault(name + "@mcp", true);
+                    printMcpServerStatus(out, name, name, enabled, statuses.get(name), allTools);
+                }
+                for (PluginMcpServer s : pluginServers) {
+                    boolean enabled = resolvedEnabled.getOrDefault(s.pluginGlobalId(), true);
+                    printMcpServerStatus(out, s.internalKey() + "  (via plugin " + s.pluginGlobalId() + ")",
+                            s.internalKey(), enabled, statuses.get(s.internalKey()), allTools);
+                }
+                out.flush();
+                return SlashResult.CONTINUE;
+            }
+
+            case "enable", "disable" -> {
+                if (positional.isEmpty()) {
+                    out.printf("  Usage: /mcp %s <server-name> [--scope user|project]%n", subcmd);
+                    out.flush();
+                    return SlashResult.CONTINUE;
+                }
+                String serverName = positional.get(0);
+                // Plugin-carried servers have no independent switch — connectMcpServers() never
+                // reads a <server>@mcp key for these, it only looks at the owning plugin's own
+                // enabled state, so writing one here would silently do nothing.
+                for (PluginMcpServer s : listPluginMcpServers(ctx.getWorkspace())) {
+                    if (s.internalKey().equals(serverName)) {
+                        out.printf("  '%s' is carried by plugin %s — it has no independent switch, "
+                                        + "use: /plugin enable|disable %s%n",
+                                serverName, s.pluginGlobalId(), s.pluginGlobalId());
+                        out.flush();
+                        return SlashResult.CONTINUE;
+                    }
+                }
+                boolean value = "enable".equals(subcmd);
+                enabledStateWriter.setEnabled(enabledYml, serverName + "@mcp", value);
+                out.println("  " + (value ? "Enabled " : "Disabled ") + serverName + " (scope: " + rexRoot + ")");
+                out.flush();
+                return SlashResult.AGENT_REBUILT;
+            }
+
+            default -> {
+                out.println("  Unknown /mcp subcommand: " + subcmd + "  (expected list|enable|disable)");
+                out.flush();
+                return SlashResult.CONTINUE;
+            }
+        }
+    }
+
+    /**
+     * One {@code /mcp list} row: {@code label} is what's printed after the state tag (may include
+     * a "via plugin ..." suffix for a Plugin-carried server); {@code statusKey} is the actual
+     * {@link McpClient} internal key used to look up connection status/tools (always the bare
+     * key, never the decorated label).
+     */
+    private void printMcpServerStatus(PrintWriter out, String label, String statusKey, boolean enabled,
+                                      ServerStatus status, Map<String, List<ToolDesc>> allTools) {
+        String state = !enabled ? "disabled"
+                : (status != null && status.connected) ? "connected"
+                : "connection failed";
+        out.printf("  [%s] %s%n", state, label);
+        if (enabled && status != null && status.connected) {
+            for (ToolDesc t : allTools.getOrDefault(statusKey, List.of())) {
+                out.printf("      %s_%s  %s%n", statusKey, t.getName(), truncate(t.getDescription(), 60));
+            }
+        } else if (enabled && status != null && status.lastError != null) {
+            out.printf("      error: %s%n", status.lastError);
         }
     }
 

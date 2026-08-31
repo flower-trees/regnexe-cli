@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class TerminalCliRenderer implements CliRenderer {
 
@@ -21,6 +23,11 @@ public class TerminalCliRenderer implements CliRenderer {
     private final PrintWriter out;
     private final ThemeConfig theme;
     private boolean thinkingLineActive = false;
+    // Keys the user picked ALWAYS for — confirm() short-circuits to YES for these without
+    // prompting again. Lives for the process's lifetime (survives agent rebuilds within one
+    // REPL session, since this renderer instance is constructed once in CliMain.run()); never
+    // persisted to disk.
+    private final Set<String> alwaysAllowed = ConcurrentHashMap.newKeySet();
 
     public TerminalCliRenderer(Terminal terminal, ThemeConfig theme) {
         this.terminal = terminal;
@@ -182,21 +189,51 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
-    public ConfirmChoice confirm(String verb) {
-        if (theme.theme() != CliTheme.CODEX) {
-            return confirmLine(verb);
+    public void mcpToolPreview(String server, String tool, Object args) {
+        String argsJson;
+        try {
+            argsJson = MAPPER.writeValueAsString(args);
+        } catch (Exception e) {
+            argsJson = String.valueOf(args);
         }
+        if (theme.theme() == CliTheme.CODEX) {
+            out.println("│ " + server + "_" + tool + " " + argsJson);
+        } else {
+            out.println();
+            out.println("  MCP call: " + server + "_" + tool);
+            out.println("  " + "─".repeat(44));
+            out.println("  " + argsJson);
+            out.println("  " + "─".repeat(44));
+        }
+        out.flush();
+    }
+
+    @Override
+    public ConfirmChoice confirm(String verb, String rememberKey) {
+        if (rememberKey != null && alwaysAllowed.contains(rememberKey)) {
+            return ConfirmChoice.YES;
+        }
+        ConfirmChoice choice = theme.theme() != CliTheme.CODEX
+                ? confirmLine(verb)
+                : confirmMenu(verb);
+        if (choice == ConfirmChoice.ALWAYS && rememberKey != null) {
+            alwaysAllowed.add(rememberKey);
+        }
+        return choice;
+    }
+
+    private ConfirmChoice confirmMenu(String verb) {
         Attributes original = terminal.enterRawMode();
         try {
-            return confirmMenu(verb);
+            return confirmMenuRaw(verb);
         } finally {
             terminal.setAttributes(original);
         }
     }
 
-    private ConfirmChoice confirmMenu(String verb) {
-        ConfirmChoice[] choices = {ConfirmChoice.NO, ConfirmChoice.YES, ConfirmChoice.PAUSE};
-        String[] labels = {"no", "yes", "pause"};
+    private ConfirmChoice confirmMenuRaw(String verb) {
+        ConfirmChoice[] choices = {ConfirmChoice.NO, ConfirmChoice.YES, ConfirmChoice.ALWAYS, ConfirmChoice.PAUSE};
+        String[] labels = {"no", "yes", "always", "pause"};
         int selected = 0;
         out.println("│ " + verb + "?");
         renderChoices(labels, selected);
@@ -244,6 +281,12 @@ public class TerminalCliRenderer implements CliRenderer {
                 out.println("│ no");
                 out.flush();
                 return ConfirmChoice.NO;
+            }
+            if (c == 'a') {
+                clearChoices(labels.length);
+                out.println("│ always");
+                out.flush();
+                return ConfirmChoice.ALWAYS;
             }
             if (c == 'p') {
                 clearChoices(labels.length);
@@ -321,12 +364,13 @@ public class TerminalCliRenderer implements CliRenderer {
 
     private ConfirmChoice confirmLine(String verb) {
         String label = Character.toUpperCase(verb.charAt(0)) + verb.substring(1);
-        out.print("  " + label + "? [y/N/pause] ");
+        out.print("  " + label + "? [y/N/pause/always] ");
         out.flush();
         String answer = readLine().trim().toLowerCase();
         out.println();
         out.flush();
         if (answer.equals("y") || answer.equals("yes")) return ConfirmChoice.YES;
+        if (answer.equals("a") || answer.equals("always")) return ConfirmChoice.ALWAYS;
         if (answer.equals("pause") || answer.equals("/pause") || answer.equals("p")) return ConfirmChoice.PAUSE;
         return ConfirmChoice.NO;
     }

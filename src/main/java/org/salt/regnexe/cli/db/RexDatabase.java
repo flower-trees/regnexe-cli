@@ -175,6 +175,16 @@ public class RexDatabase implements AutoCloseable {
         }
     }
 
+    /**
+     * Loads every conversation turn recorded for the given session name, oldest first — the
+     * same {@code sessionName.hashCode()} conversion {@link #clearConversation} uses, and the
+     * same {@code SqliteConversationStorage} deserialization the running agent itself reads
+     * through, so this returns exactly what {@code /resume}/{@code /continue} would see.
+     */
+    public java.util.List<org.salt.jlangchain.core.history.HistoryInfos> loadConversation(String sessionName) {
+        return new SqliteConversationStorage(this).loadAll(0L, 0L, (long) sessionName.hashCode());
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static SessionRow mapRow(ResultSet rs) throws SQLException {

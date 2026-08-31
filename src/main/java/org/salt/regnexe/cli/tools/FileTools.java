@@ -23,6 +23,25 @@ public class FileTools {
 
     private static final int DEFAULT_READ_LINES = 200;
 
+    /**
+     * Builds a minimal JSON Schema {@code Map} for {@link Tool#getParametersSchema()} — same
+     * purpose as {@code McpTools.asSchemaMap}, just hand-built here since these are code-first
+     * tools with no MCP {@code inputSchema} to pass through. Needed because {@code
+     * McpAgentExecutor.buildSchema(String)} (the fallback used when {@code parametersSchema} is
+     * unset) marks every param listed in {@link Tool#getParams()} required, with no way to say
+     * otherwise — real problem, not hypothetical: {@code read_file}'s {@code offset}/{@code limit}
+     * and {@code search_files}'s {@code path} are genuinely optional (both have real defaults
+     * right below), but were being forced into every tool call regardless.
+     */
+    private static Map<String, Object> schema(String[] required, Object... propNameType) {
+        Map<String, Object> properties = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < propNameType.length; i += 2) {
+            properties.put((String) propNameType[i],
+                    Map.of("type", (String) propNameType[i + 1]));
+        }
+        return Map.of("type", "object", "properties", properties, "required", List.of(required));
+    }
+
     public static Tool readFile(WorkspaceContext ctx) {
         return Tool.builder()
                 .name("read_file")
@@ -33,6 +52,8 @@ public class FileTools {
                     "The header shows total line count so you know whether to paginate. " +
                     "Output is capped at " + MAX_READ_CHARS + " characters as a safety limit.")
                 .params("path: String, offset: Integer, limit: Integer")
+                .parametersSchema(schema(new String[]{"path"},
+                        "path", "string", "offset", "integer", "limit", "integer"))
                 .func(raw -> {
                     Map<String, Object> args = toMap(raw);
                     String pathStr = str(args, "path");
@@ -136,6 +157,8 @@ public class FileTools {
                     "Returns matching lines with file path and line number. " +
                     "Results are limited to " + MAX_SEARCH_HITS + " matches.")
                 .params("pattern: String, path: String")
+                .parametersSchema(schema(new String[]{"pattern"},
+                        "pattern", "string", "path", "string"))
                 .func(raw -> {
                     Map<String, Object> args = toMap(raw);
                     String pattern = str(args, "pattern");
@@ -199,12 +222,14 @@ public class FileTools {
                     }
                     boolean exists = Files.exists(file);
                     renderer.filePreview(ctx.displayPath(file), content, !exists);
-                    ConfirmChoice choice = renderer.confirm("apply");
+                    ConfirmChoice choice = renderer.confirm("apply", "write_file");
                     if (choice == ConfirmChoice.PAUSE) {
                         if (pauseAction != null) pauseAction.run();
                         return "Task paused by user.";
                     }
-                    if (choice != ConfirmChoice.YES) return "Write cancelled by user.";
+                    if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
+                        return "Write cancelled by user.";
+                    }
                     try {
                         Files.createDirectories(file.getParent());
                         Files.writeString(file, content);
@@ -254,12 +279,14 @@ public class FileTools {
                     }
                     String updated = current.substring(0, idx) + newString + current.substring(idx + oldString.length());
                     renderer.editPreview(ctx.displayPath(file), oldString, newString);
-                    ConfirmChoice choice = renderer.confirm("apply");
+                    ConfirmChoice choice = renderer.confirm("apply", "edit_file");
                     if (choice == ConfirmChoice.PAUSE) {
                         if (pauseAction != null) pauseAction.run();
                         return "Task paused by user.";
                     }
-                    if (choice != ConfirmChoice.YES) return "Edit cancelled by user.";
+                    if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
+                        return "Edit cancelled by user.";
+                    }
                     try {
                         Files.writeString(file, updated);
                         return "Applied edit to " + ctx.displayPath(file);
