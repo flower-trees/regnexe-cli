@@ -29,8 +29,7 @@ public class CliEventListener extends AbstractEventListener {
                  EXECUTION_STARTED,
                  TOOL_CALLED,
                  TOOL_RESULT,
-                 TASK_TOKEN_SUMMARY,
-                 LOOP_PAUSE_REASON -> true;
+                 TASK_TOKEN_SUMMARY -> true;
             // LLM_RESPONDED / *_LLM_RESPONDED contain the full execution context,
             // not just the answer text. Clean answer is printed via AgentResult.getFinalText().
             default -> false;
@@ -66,14 +65,6 @@ public class CliEventListener extends AbstractEventListener {
             // Per-task token summary, emitted automatically by TokenAggregatingEventListener
             case TASK_TOKEN_SUMMARY -> {
                 renderer.tokenSummary(event.getText());
-            }
-
-            // Only fires when the loop paused/failed because of a caught exception — see
-            // EventType.LOOP_PAUSE_REASON's javadoc. Printed as a warning right before the
-            // generic "Task paused" message, so a 402 shows *why* instead of leaving the user to
-            // guess from a bare "paused".
-            case LOOP_PAUSE_REASON -> {
-                renderer.warning(event.getText());
             }
         }
     }

@@ -202,9 +202,6 @@ public class CliMain implements CommandLineRunner {
 
                 Usage:
                   rex [--session <name>]
-                  rex --continue | -c        continue the most recently used session
-                  rex --resume <session-id>  resume a paused task in that session
-                  rex --force-resume <id>    also resume a FAILED task (use once its actual cause is fixed)
                   rex --help
                   rex --version
 
@@ -264,29 +261,11 @@ public class CliMain implements CommandLineRunner {
     public void run(String... args) throws Exception {
         RexConfig config = RexConfig.load();
 
-        // Parse --session / --resume / --force-resume / --continue arguments
+        // Parse --session argument
         String sessionArg = null;
-        String resumeArg = null;
-        boolean forceResume = false;
-        boolean continueArg = false;
         for (int i = 0; i < args.length; i++) {
             if ("--session".equals(args[i]) && i + 1 < args.length) {
                 sessionArg = args[i + 1];
-            } else if ("--resume".equals(args[i]) && i + 1 < args.length) {
-                resumeArg = args[i + 1];
-                // --resume implies --session with the same name
-                if (sessionArg == null) sessionArg = resumeArg;
-            } else if ("--force-resume".equals(args[i]) && i + 1 < args.length) {
-                // Same as --resume, but also considers a FAILED task (one the harness itself gave
-                // up on — a real error, not just an interrupted PAUSED one) eligible — for when
-                // the actual cause has been fixed since (billing topped up, model config switched
-                // to a working vendor). See TaskStore.listResumable's javadoc for the reasoning
-                // behind why this isn't the default.
-                resumeArg = args[i + 1];
-                forceResume = true;
-                if (sessionArg == null) sessionArg = resumeArg;
-            } else if ("--continue".equals(args[i]) || "-c".equals(args[i])) {
-                continueArg = true;
             }
         }
 
@@ -318,10 +297,8 @@ public class CliMain implements CommandLineRunner {
         String dbWarning = null;
         try {
             db = new RexDatabase();
-            // On Ctrl+C / SIGTERM, mark in-flight RUNNING tasks as PAUSED so --resume works.
             final RexDatabase dbRef = db;
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-                try { dbRef.markAllRunningAsPaused(); } catch (Exception ignored) {}
                 try { dbRef.close(); } catch (Exception ignored) {}
             }, "rex-shutdown"));
         } catch (Exception e) {
@@ -366,9 +343,7 @@ public class CliMain implements CommandLineRunner {
             }
         });
 
-        SessionContext ctx = continueArg
-                ? resolveMostRecentSession(config, db)
-                : resolveSession(sessionArg, config, db);
+        SessionContext ctx = resolveSession(sessionArg, config, db);
         RegnexeAgent agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
         agentRef.set(agent);
 
@@ -377,30 +352,6 @@ public class CliMain implements CommandLineRunner {
                 ? vendorKeyEnvName(config.getModel().getVendor()) : null;
         renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
         if (dbWarning != null) renderer.warning(dbWarning);
-
-        // --resume / --force-resume: kick off the paused (or FAILED, if forced) task immediately
-        // before entering the REPL loop
-        if (resumeArg != null) {
-            final boolean force = forceResume;
-            out.printf(force ? "Force-resuming failed task for session: %s%n%n"
-                              : "Resuming paused task for session: %s%n%n", ctx.getSessionName());
-            out.flush();
-            try {
-                RegnexeAgent resumeAgent = agent;
-                AgentResult r = runAgentTask(
-                        () -> resumeAgent.resume(ctx.getSessionName(), null, force),
-                        ctx,
-                        out,
-                        executing,
-                        interruptCount);
-                handleAgentResult(r, ctx, out, renderer, db);
-            } catch (IllegalStateException e) {
-                renderer.warning(e.getMessage());
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                exitRequested.set(true);
-            }
-        }
 
         while (!exitRequested.get()) {
             String input;
@@ -416,67 +367,48 @@ public class CliMain implements CommandLineRunner {
             input = input.trim();
             if (input.isEmpty()) continue;
 
-            boolean resumeRequested = false;
-            String resumeSupplement = null;
             if (input.startsWith("/")) {
-                if (input.equals("/resume") || input.startsWith("/resume ")
-                        || input.equals("/continue") || input.startsWith("/continue ")) {
-                    resumeRequested = true;
-                    resumeSupplement = extractSlashArgument(input);
-                } else {
-                    SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
-                    if (result == SlashResult.EXIT) break;
-                    if (result == SlashResult.AGENT_REBUILT) {
-                        // ctx was mutated in-place by handleSlashCommand (/switch)
-                        agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
-                        agentRef.set(agent);
-                    } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
-                        RegnexeAgent taskAgent = agent;
-                        String capId = result.capabilityId;
-                        String skillArgs = result.args;
-                        String displayGoal = result.rawInput;
-                        try {
-                            AgentResult skillResult = runAgentTask(
-                                    () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
-                                    ctx, out, executing, interruptCount);
-                            handleAgentResult(skillResult, ctx, out, renderer, db);
-                            if (db != null) {
-                                try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
-                            }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        } catch (Exception e) {
-                            out.println("  [error] " + e.getMessage());
-                            out.flush();
+                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                if (result == SlashResult.EXIT) break;
+                if (result == SlashResult.AGENT_REBUILT) {
+                    // ctx was mutated in-place by handleSlashCommand (/switch)
+                    agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
+                    agentRef.set(agent);
+                } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                    RegnexeAgent taskAgent = agent;
+                    String capId = result.capabilityId;
+                    String skillArgs = result.args;
+                    String displayGoal = result.rawInput;
+                    try {
+                        AgentResult skillResult = runAgentTask(
+                                () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
+                                ctx, out, executing, interruptCount);
+                        handleAgentResult(skillResult, ctx, out, renderer, db);
+                        if (db != null) {
+                            try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
                         }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        out.println("  [error] " + e.getMessage());
+                        out.flush();
                     }
-                    continue;
                 }
+                continue;
             }
 
             try {
-                AgentResult result;
                 RegnexeAgent taskAgent = agent;
-                if (resumeRequested) {
-                    String supplement = resumeSupplement;
-                    result = runAgentTask(
-                            () -> taskAgent.resume(ctx.getSessionName(), supplement),
-                            ctx,
-                            out,
-                            executing,
-                            interruptCount);
-                } else {
-                    TaskRequest req = new TaskRequest();
-                    req.setGoal(injectWorkspacePreamble(input, ctx));
-                    req.setSessionId(ctx.getSessionName());
-                    result = runAgentTask(
-                            () -> taskAgent.execute(req),
-                            ctx,
-                            out,
-                            executing,
-                            interruptCount);
-                }
+                TaskRequest req = new TaskRequest();
+                req.setGoal(injectWorkspacePreamble(input, ctx));
+                req.setSessionId(ctx.getSessionName());
+                AgentResult result = runAgentTask(
+                        () -> taskAgent.execute(req),
+                        ctx,
+                        out,
+                        executing,
+                        interruptCount);
                 handleAgentResult(result, ctx, out, renderer, db);
                 if (db != null) {
                     try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
@@ -520,11 +452,6 @@ public class CliMain implements CommandLineRunner {
             interruptCount.set(0);
             executor.shutdown();
         }
-    }
-
-    private String extractSlashArgument(String input) {
-        String[] parts = input.split("\\s+", 2);
-        return parts.length > 1 && !parts[1].isBlank() ? parts[1].trim() : null;
     }
 
     // ── Session resolution ────────────────────────────────────────────────────
@@ -579,39 +506,11 @@ public class CliMain implements CommandLineRunner {
         }
     }
 
-    /**
-     * {@code --continue}/{@code -c}: picks up the most recently used session without the caller
-     * needing to remember its name. Deliberately does NOT touch Task-level resume ({@code
-     * --resume <name>} stays the only way to trigger that) — this only re-attaches Session memory
-     * (Layer 1), same as if the caller had typed {@code --session <that name>} themselves. No
-     * sessions yet (fresh install) falls back to the same fresh-session bootstrap as a bare,
-     * no-flags launch.
-     */
-    private SessionContext resolveMostRecentSession(RexConfig config, RexDatabase db) {
-        if (db == null) {
-            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
-            return new SessionContext(UUID.randomUUID().toString(), generateSessionName(), ws);
-        }
-        try {
-            List<SessionRow> sessions = db.listSessions(); // ORDER BY updated_at DESC
-            if (sessions.isEmpty()) {
-                return resolveSession(null, config, db);
-            }
-            SessionRow row = sessions.get(0);
-            WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
-            return new SessionContext(row.getSessionId(), row.getName(), ws);
-        } catch (SQLException e) {
-            System.err.println("[warn] Session DB error: " + e.getMessage());
-            WorkspaceContext ws = buildWorkspaceFor(System.getProperty("user.dir"), config);
-            return new SessionContext(UUID.randomUUID().toString(), generateSessionName(), ws);
-        }
-    }
-
     // ── Result handling ───────────────────────────────────────────────────────
 
     private void handleAgentResult(AgentResult result, SessionContext ctx, PrintWriter out,
                                    CliRenderer renderer, RexDatabase db) {
-        // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
+        // TASK_TOKEN_SUMMARY fires via listener just before execute() returns.
         // Print the clean final answer after the token summary line.
         String answer = result.getFinalText();
         if (answer != null && !answer.isBlank()) {
@@ -643,7 +542,7 @@ public class CliMain implements CommandLineRunner {
         if (partial != null && !partial.isBlank()) {
             summary.append("Partial result: ").append(truncate(partial, 800)).append("\n");
         }
-        summary.append("Use /resume to continue this paused task.");
+        summary.append("Task was paused.");
 
         HistoryInfos turn = HistoryInfos.builder()
                 .type(HistoryInfos.Type.NORMAL)
@@ -1307,7 +1206,6 @@ public class CliMain implements CommandLineRunner {
                           /history [name]    show a session's conversation history (default: current)
                           /add-dir <path>    add a workspace directory for this session
                           /dirs              list all workspace directories
-                          /resume            resume the latest paused task in this session
                           /skills            list available skills
                           /<skill name> [args]  run a skill directly
                           /plugin install <local-path> [--marketplace <name>] [--scope user|project]
@@ -1318,12 +1216,6 @@ public class CliMain implements CommandLineRunner {
                           /mcp enable|disable <server-name> [--scope user|project]
                                              (declare servers in ~/.rex/mcp.json or <project>/.rex/mcp.json;
                                               a Plugin-carried server has no independent switch — use /plugin instead)
-
-                        Pause/Resume:
-                          At any 'Execute/Apply? [y/N/pause]' prompt, type 'pause' to pause the task.
-                          After Ctrl+C pauses a task, type /resume to resume it.
-                          Resume a paused task by restarting with: rex --resume <session-name>
-                          Continue the most recent session (no name needed): rex --continue
                         """);
                 out.flush();
             }

@@ -328,10 +328,9 @@ public class TerminalCliRenderer implements CliRenderer {
         if (theme.theme() == CliTheme.CODEX) {
             out.println();
             out.printf("%s%n", yellow("paused"));
-            out.printf("resume: /resume  or  rex --resume %s%n", sessionName);
         } else {
             out.println();
-            out.printf("  Task paused. Resume with: /resume or rex --resume %s%n", sessionName);
+            out.printf("  Task paused.%n");
         }
         out.flush();
     }
