@@ -53,8 +53,19 @@ public class BashTool {
     // an unrelated sibling project directory, and `find /` turning up an unrelated task's leftover
     // files elsewhere on disk. Unlike read_file/list_files (which already enforce this via
     // WorkspaceContext.resolve()), bash had no boundary at all before this.
+    //
+    // Two real false positives, caught live blocking a Chinese-language HTML-writing skill:
+    //  1. Java's \w is ASCII-only by default, so "天工/智身" (Chinese text using "/" as an "or"
+    //     separator — completely ordinary Chinese punctuation) reads as "not preceded by a word
+    //     char", making the "/" look like a fresh absolute-path start. Same problem for "/" inside
+    //     any non-ASCII (Japanese/Korean/etc.) text. Pattern.UNICODE_CHARACTER_CLASS makes \w
+    //     Unicode-aware so CJK letters count as word chars in both the lookbehind and the
+    //     token-continuation class.
+    //  2. "</h2>" (or any HTML/XML closing tag) has its "<" immediately before the "/", and "<"
+    //     was never excluded by the lookbehind, so ordinary article HTML ("<h2>...</h2>") reads
+    //     as an absolute path "/h2". Added "<" to the excluded set.
     private static final Pattern ABS_PATH_TOKEN =
-            Pattern.compile("(?<![\\w./:-])(/[\\w./-]*|~(?:/[\\w./-]*)?)");
+            Pattern.compile("(?<![\\w./:<-])(/[\\w./-]*|~(?:/[\\w./-]*)?)", Pattern.UNICODE_CHARACTER_CLASS);
 
     // Absolute paths under these prefixes are left alone even though they're outside the
     // workspace: standard system/tool locations (needed for things like `2>/dev/null` or a shell

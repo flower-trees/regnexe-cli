@@ -7,6 +7,7 @@ import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
+import org.salt.jlangchain.ai.client.AiException;
 import org.salt.jlangchain.core.history.HistoryInfos;
 import org.salt.jlangchain.core.agent.memory.SlidingWindowContext;
 import org.salt.jlangchain.core.llm.BaseChatModel;
@@ -484,7 +485,7 @@ public class CliMain implements CommandLineRunner {
                 Thread.currentThread().interrupt();
                 break;
             } catch (Exception e) {
-                renderer.error(e.getMessage());
+                renderer.error(describeError(e));
             }
         }
 
@@ -742,9 +743,47 @@ public class CliMain implements CommandLineRunner {
      * which vendor's endpoint the request happens to go through — a deepseek-family model hosted
      * via aliyun still needs (and still honors) the same override a direct deepseek call does.
      */
+    /**
+     * A raw {@code Exception.getMessage()} for a hard-FAILED task (see RegnexeAgent.runLoop() —
+     * 403/404 and anything else unclassified reaches here, since those stay a real re-thrown
+     * exception rather than a clean PAUSED) is usually either {@code null} (many exceptions,
+     * NullPointerException included, don't set one) or, for an HTTP failure specifically,
+     * {@code RuntimeException(Throwable)}'s default {@code cause.toString()} — something like
+     * {@code "...AiException: {\"error\":{\"message\":\"...\"}}"}, technically informative but not
+     * pleasant to read. Unwrap an AiException in the cause chain for a clean "HTTP <code>: <body>"
+     * instead; otherwise fall back to the exception's own class name so the user at least sees
+     * what kind of thing went wrong rather than a bare "error: null".
+     */
+    private static String describeError(Throwable e) {
+        for (Throwable cur = e; cur != null; cur = cur.getCause()) {
+            if (cur instanceof AiException ai) {
+                return "HTTP " + ai.getCode() + ": " + ai.getMessage();
+            }
+        }
+        return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName() + " (no message)";
+    }
+
     private static java.util.Map<String, Object> deepseekThinkingKwargs(String model) {
-        if (model == null || !model.toLowerCase().startsWith("deepseek-")) return null;
-        return java.util.Map.of("thinking", java.util.Map.of("type", "disabled"));
+        if (model == null) return null;
+        String m = model.toLowerCase();
+        // deepseek-family models (direct or aliyun-hosted) default chain-of-thought ON, wasting
+        // billed tokens/latency on Plan/Execute/Reflect calls that never surface it. Confirmed via
+        // direct curl to both api.deepseek.com and Aliyun's DashScope endpoint.
+        if (m.startsWith("deepseek-")) {
+            return java.util.Map.of("thinking", java.util.Map.of("type", "disabled"));
+        }
+        // harness-punchbag-pro (local LiteLLM proxy, vendor: custom): confirmed via two separate
+        // real 400s (TaskPlanner.process + Reflector.process) that this model group's backend
+        // rejects the framework's default temperature=0.7 — "invalid temperature: only 1 is
+        // allowed for this model" / "not supported for kimi-k3 model". OpenAIConver.convertRequest
+        // already special-cases an "temperature" key inside modelKwargs to override the request's
+        // temperature field (see its javadoc comment), so this is the same mechanism as the
+        // thinking-disable override above, not a new one. harness-punchbag-flash has run clean at
+        // the 0.7 default in every real test so far — left alone rather than guessed at.
+        if (m.equals("harness-punchbag-pro")) {
+            return java.util.Map.of("temperature", 1);
+        }
+        return null;
     }
 
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
