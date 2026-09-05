@@ -68,9 +68,15 @@ public class McpTools {
                         try {
                             ToolResult result = client.callTool(serverName, desc.getName(), args);
                             if (result == null) return "";
-                            return result.isError()
+                            // MCP tool results have no size limit of their own (unlike bash/
+                            // read_file, which already capped their own output before this) — a
+                            // single tavily_search call, for instance, can return an unbounded
+                            // amount of text. Same overflow handling as bash: preview + tmp-file
+                            // pointer instead of an unbounded string landing in context.
+                            String text = result.isError()
                                     ? "Error: " + result.getAllText()
                                     : result.getAllText();
+                            return ToolOutputOverflow.capOrOffload(text, sanitizeLabel(desc.getName()));
                         } catch (Exception e) {
                             return "Error calling MCP tool '" + capabilityId + "': " + e.getMessage();
                         }
@@ -78,6 +84,14 @@ public class McpTools {
                     .build());
         }
         return tools;
+    }
+
+    /** Keeps only filename-safe characters for a {@link ToolOutputOverflow} tmp-file prefix — MCP
+     * tool names are server-defined and not guaranteed to be a safe {@code Files.createTempFile}
+     * prefix as-is. */
+    private static String sanitizeLabel(String name) {
+        String cleaned = name == null ? "mcp-tool" : name.replaceAll("[^a-zA-Z0-9_-]", "_");
+        return cleaned.isBlank() ? "mcp-tool" : cleaned;
     }
 
     /** Casts an MCP tool's {@code inputSchema} (already a parsed JSON-object map) for direct use

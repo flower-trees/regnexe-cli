@@ -671,15 +671,20 @@ public class CliMain implements CommandLineRunner {
         if (m.startsWith("deepseek-")) {
             return java.util.Map.of("thinking", java.util.Map.of("type", "disabled"));
         }
-        // harness-punchbag-pro (local LiteLLM proxy, vendor: custom): confirmed via two separate
-        // real 400s (TaskPlanner.process + Reflector.process) that this model group's backend
-        // rejects the framework's default temperature=0.7 — "invalid temperature: only 1 is
-        // allowed for this model" / "not supported for kimi-k3 model". OpenAIConver.convertRequest
-        // already special-cases an "temperature" key inside modelKwargs to override the request's
+        // harness-punchbag-* (local LiteLLM proxy, vendor: custom): confirmed via real 400s from
+        // three separate call sites (TaskPlanner.process, Reflector.process, and now
+        // CapabilityExecutor's Execute call too) that this proxy's backend rejects the
+        // framework's default temperature=0.7 — "invalid temperature: only 1 is allowed for this
+        // model" / "not supported for kimi-k3 model". OpenAIConver.convertRequest already
+        // special-cases a "temperature" key inside modelKwargs to override the request's
         // temperature field (see its javadoc comment), so this is the same mechanism as the
-        // thinking-disable override above, not a new one. harness-punchbag-flash has run clean at
-        // the 0.7 default in every real test so far — left alone rather than guessed at.
-        if (m.equals("harness-punchbag-pro")) {
+        // thinking-disable override above, not a new one. Originally scoped to just "-pro" (flash
+        // ran clean in earlier tests), but flash hit the identical error in later real use — the
+        // proxy load-balances a "model group" across multiple backends, and apparently more than
+        // one of them shares this constraint, so the whole harness-punchbag-* family gets it now
+        // rather than allow-listing one more exact name each time a different tier hits the same
+        // wall.
+        if (m.startsWith("harness-punchbag")) {
             return java.util.Map.of("temperature", 1);
         }
         return null;

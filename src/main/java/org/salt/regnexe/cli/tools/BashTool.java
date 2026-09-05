@@ -18,7 +18,11 @@ import java.util.regex.Pattern;
 
 public class BashTool {
 
-    private static final int MAX_OUTPUT_CHARS = 10_000;
+    // Hard ceiling on what gets captured/saved at all — protects memory/disk from a truly
+    // runaway command (a stuck loop spewing gigabytes), not the normal case. Well above
+    // ToolOutputOverflow.MAX_INLINE_CHARS, which is the much smaller threshold that actually
+    // decides whether output goes inline or to a tmp file — see capOrOffload() below.
+    private static final int MAX_CAPTURE_CHARS = 200_000;
     private static final int TIMEOUT_SECONDS  = 30;
 
     // Commands that start with these prefixes are treated as read-only (no confirmation needed).
@@ -71,11 +75,9 @@ public class BashTool {
     // workspace: standard system/tool locations (needed for things like `2>/dev/null` or a shell
     // resolving `/usr/bin/env`) and scratch temp dirs (writing a throwaway file to /tmp is normal
     // and not itself the problem — the problem is treating something found by searching *all* of
-    // / as if it were part of this project).
-    private static final List<String> SAFE_ABSOLUTE_PREFIXES = List.of(
-        "/dev/", "/bin/", "/sbin/", "/usr/", "/opt/", "/etc/", "/System/", "/Library/",
-        "/private/etc/", "/private/tmp/", "/private/var/folders/", "/tmp/", "/var/folders/"
-    );
+    // / as if it were part of this project). Shared with WorkspaceContext.resolveForRead() — same
+    // list, so read_file can retrieve a file this list lets bash reference (e.g. a
+    // ToolOutputOverflow pointer) without a second, drifting copy of the prefixes.
 
     /** Returns the first out-of-workspace absolute path token found, or null if the command is clean. */
     private static String findWorkspaceEscape(String command, WorkspaceContext workspace) {
@@ -89,7 +91,7 @@ public class BashTool {
             if (token.equals("~") || token.startsWith("~/")) {
                 return token;
             }
-            if (SAFE_ABSOLUTE_PREFIXES.stream().anyMatch(token::startsWith)) continue;
+            if (WorkspaceContext.SAFE_READ_PREFIXES.stream().anyMatch(token::startsWith)) continue;
             try {
                 workspace.resolve(token);
             } catch (SecurityException e) {
@@ -125,7 +127,8 @@ public class BashTool {
                     "Execute a shell command in the workspace directory. " +
                     "stdout and stderr are captured together and returned. " +
                     "The command runs with a " + TIMEOUT_SECONDS + "-second timeout. " +
-                    "Output is capped at " + MAX_OUTPUT_CHARS + " characters. " +
+                    "Output beyond " + ToolOutputOverflow.MAX_INLINE_CHARS + " characters is saved to " +
+                    "a tmp file (read_file/bash can read the rest) rather than lost. " +
                     "Destructive system commands are blocked.")
                 .params("command: String")
                 .func(raw -> {
@@ -179,23 +182,23 @@ public class BashTool {
                         Process proc = pb.start();
 
                         StringBuilder output = new StringBuilder();
-                        boolean truncated = false;
+                        boolean atCaptureCeiling = false;
 
                         try (InputStream is = proc.getInputStream()) {
                             byte[] buf = new byte[4096];
                             int read;
                             while ((read = is.read(buf)) != -1) {
-                                if (!truncated) {
+                                if (!atCaptureCeiling) {
                                     String chunk = new String(buf, 0, read, StandardCharsets.UTF_8);
-                                    if (output.length() + chunk.length() <= MAX_OUTPUT_CHARS) {
+                                    if (output.length() + chunk.length() <= MAX_CAPTURE_CHARS) {
                                         output.append(chunk);
                                     } else {
-                                        int space = MAX_OUTPUT_CHARS - output.length();
+                                        int space = MAX_CAPTURE_CHARS - output.length();
                                         if (space > 0) output.append(chunk, 0, space);
-                                        truncated = true;
+                                        atCaptureCeiling = true;
                                     }
                                 }
-                                // keep draining even after truncation so the process doesn't block
+                                // keep draining even past the ceiling so the process doesn't block
                             }
                         }
 
@@ -207,14 +210,20 @@ public class BashTool {
                         }
 
                         int exit = proc.exitValue();
+                        String outputText = output.toString();
+                        // Beyond MAX_INLINE_CHARS: preview + tmp-file pointer instead of losing the
+                        // rest (see ToolOutputOverflow). atCaptureCeiling means even the saved copy
+                        // was cut at MAX_CAPTURE_CHARS — the true output was larger still.
+                        String shown = ToolOutputOverflow.capOrOffload(outputText, "bash");
                         StringBuilder result = new StringBuilder();
                         result.append("Exit: ").append(exit).append("\n");
-                        if (!output.isEmpty()) {
+                        if (!shown.isEmpty()) {
                             result.append("─".repeat(40)).append("\n");
-                            result.append(output);
+                            result.append(shown);
                         }
-                        if (truncated) {
-                            result.append("\n[... output truncated at ").append(MAX_OUTPUT_CHARS).append(" chars ...]");
+                        if (atCaptureCeiling) {
+                            result.append("\n[... command produced more than ").append(MAX_CAPTURE_CHARS)
+                                  .append(" chars; even the saved copy was cut off there ...]");
                         }
                         return result.toString();
 

@@ -15,6 +15,18 @@ import java.util.List;
  */
 public class WorkspaceContext {
 
+    // Absolute paths under these prefixes are readable even though they're outside every
+    // workspace root — standard system/tool locations and scratch temp dirs. Shared with
+    // BashTool's own workspace-escape heuristic (same list, same reasoning: these are locations a
+    // command legitimately touches — 2>/dev/null, /usr/bin/env — or where ToolOutputOverflow
+    // saves overflowed tool output for later retrieval via read_file). Read-only: write_file/
+    // edit_file still go through resolve(), which does NOT consult this list — there's no reason
+    // to let the model write into system tmp via those tools.
+    public static final List<String> SAFE_READ_PREFIXES = List.of(
+        "/dev/", "/bin/", "/sbin/", "/usr/", "/opt/", "/etc/", "/System/", "/Library/",
+        "/private/etc/", "/private/tmp/", "/private/var/folders/", "/tmp/", "/var/folders/"
+    );
+
     private final List<Path> roots;
 
     public WorkspaceContext(List<Path> roots) {
@@ -60,7 +72,12 @@ public class WorkspaceContext {
         }
         Path candidate = Path.of(pathStr);
         if (candidate.isAbsolute()) {
-            // Absolute path: just enforce the root whitelist
+            Path normalized = candidate.normalize();
+            String s = normalized.toString();
+            if (SAFE_READ_PREFIXES.stream().anyMatch(s::startsWith)) {
+                return normalized;
+            }
+            // Not a known-safe system path: just enforce the root whitelist
             return resolve(pathStr);
         }
         // Relative path: try each root, return first existing match
