@@ -36,6 +36,7 @@ import org.salt.regnexe.agent.core.marketplace.scope.ScopedEnabledState;
 import org.salt.regnexe.agent.core.task.AgentResult;
 import org.salt.regnexe.agent.core.task.state.RoundRecord;
 import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
+import org.salt.regnexe.agent.core.task.state.reflection.ReflectionDecision;
 import org.salt.regnexe.agent.core.task.state.TaskRequest;
 import org.salt.regnexe.cli.config.RexConfig;
 import org.salt.regnexe.cli.db.RexDatabase;
@@ -68,6 +69,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -316,7 +318,7 @@ public class CliMain implements CommandLineRunner {
         }, "rex-mcp-shutdown"));
 
         // AtomicReference lets the pauseAction lambda always call the most recent agent instance,
-        // even after /switch rebuilds the agent.
+        // even after /resume rebuilds the agent.
         AtomicReference<RegnexeAgent> agentRef = new AtomicReference<>();
         AtomicBoolean executing = new AtomicBoolean(false);
         AtomicBoolean exitRequested = new AtomicBoolean(false);
@@ -353,6 +355,12 @@ public class CliMain implements CommandLineRunner {
         renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
         if (dbWarning != null) renderer.warning(dbWarning);
 
+        // Set by /resume when it finds an unfinished task; consumed by the very next non-slash
+        // input, which becomes that task's supplement instruction via agent.resume(...) instead
+        // of starting a fresh agent.execute(...) call. Survives other slash commands in between
+        // (they leave it untouched — see SlashResult.pendingResume's javadoc).
+        boolean pendingResume = false;
+
         while (!exitRequested.get()) {
             String input;
             try {
@@ -370,8 +378,8 @@ public class CliMain implements CommandLineRunner {
             if (input.startsWith("/")) {
                 SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
                 if (result == SlashResult.EXIT) break;
-                if (result == SlashResult.AGENT_REBUILT) {
-                    // ctx was mutated in-place by handleSlashCommand (/switch)
+                if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
+                    // ctx was mutated in-place by handleSlashCommand (/resume)
                     agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
                     agentRef.set(agent);
                 } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
@@ -395,20 +403,35 @@ public class CliMain implements CommandLineRunner {
                         out.flush();
                     }
                 }
+                if (result.pendingResume != null) {
+                    pendingResume = result.pendingResume;
+                }
                 continue;
             }
 
             try {
                 RegnexeAgent taskAgent = agent;
-                TaskRequest req = new TaskRequest();
-                req.setGoal(injectWorkspacePreamble(input, ctx));
-                req.setSessionId(ctx.getSessionName());
-                AgentResult result = runAgentTask(
-                        () -> taskAgent.execute(req),
-                        ctx,
-                        out,
-                        executing,
-                        interruptCount);
+                AgentResult result;
+                if (pendingResume) {
+                    String supplement = input;
+                    result = runAgentTask(
+                            () -> taskAgent.resume(ctx.getSessionName(), supplement),
+                            ctx,
+                            out,
+                            executing,
+                            interruptCount);
+                    pendingResume = false;
+                } else {
+                    TaskRequest req = new TaskRequest();
+                    req.setGoal(injectWorkspacePreamble(input, ctx));
+                    req.setSessionId(ctx.getSessionName());
+                    result = runAgentTask(
+                            () -> taskAgent.execute(req),
+                            ctx,
+                            out,
+                            executing,
+                            interruptCount);
+                }
                 handleAgentResult(result, ctx, out, renderer, db);
                 if (db != null) {
                     try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
@@ -423,8 +446,10 @@ public class CliMain implements CommandLineRunner {
 
         renderer.goodbye();
         terminal.close();
-        // db.close() is handled by the shutdown hook registered above, which also marks
-        // any RUNNING tasks as PAUSED. Don't double-close here.
+        // db.close() is handled by the shutdown hook registered above — don't double-close here.
+        // A clean exit here never leaves a RUNNING task behind (the REPL loop only returns after
+        // runAgentTask() completes); a RUNNING row only survives a hard kill (kill -9, crash) that
+        // never reaches this point at all — /resume's listResumable() picks those up regardless.
     }
 
     private AgentResult runAgentTask(Callable<AgentResult> task,
@@ -482,7 +507,7 @@ public class CliMain implements CommandLineRunner {
         }
         try {
             // An explicit --session <name> may legitimately be reused across launches (that's the
-            // whole point of naming one) — find-or-create, same as /switch. An implicit launch
+            // whole point of naming one) — find-or-create, same as /resume. An implicit launch
             // always creates a fresh session (see generateSessionName()), so this lookup is
             // skipped entirely and row is always null.
             SessionRow row = explicit ? db.findSessionByName(sessionName).orElse(null) : null;
@@ -557,6 +582,30 @@ public class CliMain implements CommandLineRunner {
         } catch (Exception ignored) {
             // Paused task persistence lives in task_store; session summary is best-effort context.
         }
+    }
+
+    /** Prints a resumable task's status/round/reason/partial-result before /resume hands it off. */
+    private void printResumableTaskSummary(TaskExecutionState state, PrintWriter out) {
+        out.println("  Found an unfinished task in this session:");
+        out.printf("    Status : %s%n", state.getStatus());
+        out.printf("    Round  : %d of %d%n", state.getCurrentRound(), state.getMaxRounds());
+        String reason = lastReflectionReason(state);
+        if (reason != null && !reason.isBlank()) {
+            out.printf("    Reason : %s%n", truncate(reason, 200));
+        }
+        String partial = latestExecutionText(state);
+        if (partial != null && !partial.isBlank()) {
+            out.println("    Partial result:");
+            out.println("      " + truncate(partial, 400));
+        }
+        out.println("  Type your next message to continue it.");
+    }
+
+    private String lastReflectionReason(TaskExecutionState state) {
+        List<RoundRecord> rounds = state.getRounds();
+        if (rounds == null || rounds.isEmpty()) return null;
+        ReflectionDecision decision = rounds.get(rounds.size() - 1).getReflection();
+        return decision != null ? decision.getReason() : null;
     }
 
     private String latestExecutionText(TaskExecutionState state) {
@@ -1132,24 +1181,32 @@ public class CliMain implements CommandLineRunner {
     private static final class SlashResult {
         enum Kind { CONTINUE, EXIT, AGENT_REBUILT, RUN_SKILL }
 
-        static final SlashResult CONTINUE = new SlashResult(Kind.CONTINUE, null, null, null);
-        static final SlashResult EXIT = new SlashResult(Kind.EXIT, null, null, null);
-        static final SlashResult AGENT_REBUILT = new SlashResult(Kind.AGENT_REBUILT, null, null, null);
+        static final SlashResult CONTINUE = new SlashResult(Kind.CONTINUE, null, null, null, null);
+        static final SlashResult EXIT = new SlashResult(Kind.EXIT, null, null, null, null);
+        static final SlashResult AGENT_REBUILT = new SlashResult(Kind.AGENT_REBUILT, null, null, null, null);
 
         final Kind kind;
         final String capabilityId;
         final String args;
         final String rawInput;
+        /** null = leave the caller's pending-resume flag untouched; non-null = set it to this. */
+        final Boolean pendingResume;
 
-        private SlashResult(Kind kind, String capabilityId, String args, String rawInput) {
+        private SlashResult(Kind kind, String capabilityId, String args, String rawInput, Boolean pendingResume) {
             this.kind = kind;
             this.capabilityId = capabilityId;
             this.args = args;
             this.rawInput = rawInput;
+            this.pendingResume = pendingResume;
         }
 
         static SlashResult runSkill(String capabilityId, String args, String rawInput) {
-            return new SlashResult(Kind.RUN_SKILL, capabilityId, args, rawInput);
+            return new SlashResult(Kind.RUN_SKILL, capabilityId, args, rawInput, null);
+        }
+
+        /** /resume's result: rebuilds the agent only if it actually switched session. */
+        static SlashResult resumed(boolean agentRebuilt, boolean pendingResume) {
+            return new SlashResult(agentRebuilt ? Kind.AGENT_REBUILT : Kind.CONTINUE, null, null, null, pendingResume);
         }
     }
 
@@ -1206,7 +1263,8 @@ public class CliMain implements CommandLineRunner {
                           /help              show this help
                           /exit              exit rex
                           /sessions          list all sessions
-                          /switch <name>     switch to a session (creates if new)
+                          /resume <name>     switch to a session (creates if new); if it has an
+                                             unfinished task, load it — your next message continues it
                           /clear             clear current session's conversation history
                           /history [name]    show a session's conversation history (default: current)
                           /add-dir <path>    add a workspace directory for this session
@@ -1278,15 +1336,10 @@ public class CliMain implements CommandLineRunner {
                 out.flush();
             }
 
-            case "/switch" -> {
+            case "/resume" -> {
                 String name = parts.length > 1 ? parts[1].trim() : "";
                 if (name.isEmpty()) {
-                    out.println("  Usage: /switch <name>");
-                    out.flush();
-                    return SlashResult.CONTINUE;
-                }
-                if (name.equals(ctx.getSessionName())) {
-                    out.println("  Already in session: " + name);
+                    out.println("  Usage: /resume <name>");
                     out.flush();
                     return SlashResult.CONTINUE;
                 }
@@ -1295,35 +1348,54 @@ public class CliMain implements CommandLineRunner {
                     out.flush();
                     return SlashResult.CONTINUE;
                 }
-                try {
-                    SessionRow row = db.findSessionByName(name).orElse(null);
-                    if (row == null) {
-                        row = new SessionRow();
-                        row.setSessionId(UUID.randomUUID().toString());
-                        row.setName(name);
-                        row.setWorkingDir(System.getProperty("user.dir"));
-                        row.setModel(config.effectiveModel());
-                        long now = System.currentTimeMillis();
-                        row.setCreatedAt(now);
-                        row.setUpdatedAt(now);
-                        db.upsertSession(row);
-                        out.printf("  Created new session: %s%n", name);
-                    } else {
-                        out.printf("  Resumed session: %s%n", name);
+                // Unlike the old /switch, don't short-circuit when already in this session —
+                // checking for a resumable task is the point even if nothing else needs to change.
+                boolean switching = !name.equals(ctx.getSessionName());
+                if (switching) {
+                    try {
+                        SessionRow row = db.findSessionByName(name).orElse(null);
+                        if (row == null) {
+                            row = new SessionRow();
+                            row.setSessionId(UUID.randomUUID().toString());
+                            row.setName(name);
+                            row.setWorkingDir(System.getProperty("user.dir"));
+                            row.setModel(config.effectiveModel());
+                            long now = System.currentTimeMillis();
+                            row.setCreatedAt(now);
+                            row.setUpdatedAt(now);
+                            db.upsertSession(row);
+                            out.printf("  Created new session: %s%n", name);
+                        } else {
+                            out.printf("  Switched to session: %s%n", name);
+                        }
+                        WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
+                        // Mutate ctx in-place — main loop rebuilds agent after this returns AGENT_REBUILT.
+                        ctx.setSessionId(row.getSessionId());
+                        ctx.setSessionName(row.getName());
+                        ctx.setWorkspace(ws);
+                        out.printf("  Workspace: %s%n", ws.primaryRoot());
+                    } catch (SQLException e) {
+                        out.println("  [error] " + e.getMessage());
+                        out.flush();
+                        return SlashResult.CONTINUE;
                     }
-                    WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
-                    // Mutate ctx in-place — main loop rebuilds agent after this returns AGENT_REBUILT.
-                    ctx.setSessionId(row.getSessionId());
-                    ctx.setSessionName(row.getName());
-                    ctx.setWorkspace(ws);
-                    out.printf("  Workspace: %s%n", ws.primaryRoot());
-                } catch (SQLException e) {
-                    out.println("  [error] " + e.getMessage());
-                    out.flush();
-                    return SlashResult.CONTINUE;
+                }
+
+                boolean pendingResume = false;
+                try {
+                    List<TaskExecutionState> resumable = new SqliteTaskStore(db).listResumable(name);
+                    if (!resumable.isEmpty()) {
+                        TaskExecutionState state = resumable.stream()
+                                .max(Comparator.comparingLong(TaskExecutionState::getUpdatedAt))
+                                .orElseThrow();
+                        printResumableTaskSummary(state, out);
+                        pendingResume = true;
+                    }
+                } catch (Exception e) {
+                    out.println("  [warn] Could not check for a resumable task: " + e.getMessage());
                 }
                 out.flush();
-                return SlashResult.AGENT_REBUILT;
+                return SlashResult.resumed(switching, pendingResume);
             }
 
             case "/clear" -> {

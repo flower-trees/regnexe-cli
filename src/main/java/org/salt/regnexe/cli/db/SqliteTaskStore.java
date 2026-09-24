@@ -8,6 +8,8 @@ import org.salt.regnexe.agent.core.task.store.TaskStore;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -63,5 +65,22 @@ public class SqliteTaskStore implements TaskStore {
     @Override
     public void markFinished(String taskId) {
         // No-op: framework calls save() with final status before calling this.
+    }
+
+    @Override
+    public List<TaskExecutionState> listResumable(String sessionId) {
+        String sql = "SELECT data FROM task_execution_states WHERE session_id = ? AND status != 'FINISHED'";
+        List<TaskExecutionState> result = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(MAPPER.readValue(rs.getString(1), TaskExecutionState.class));
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("listResumable failed for session " + sessionId, e);
+        }
+        return result;
     }
 }
