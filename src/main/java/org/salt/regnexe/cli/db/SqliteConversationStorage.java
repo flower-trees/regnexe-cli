@@ -41,7 +41,7 @@ public class SqliteConversationStorage implements ConversationStorage {
     }
 
     @Override
-    public List<HistoryInfos> loadAll(Long appId, Long userId, Long sessionId) {
+    public List<HistoryInfos> loadAll(String appId, String userId, String sessionId) {
         String sql = """
                 SELECT data FROM conversation_turns
                 WHERE app_id = ? AND user_id = ? AND session_id = ?
@@ -49,9 +49,9 @@ public class SqliteConversationStorage implements ConversationStorage {
                 """;
         List<HistoryInfos> result = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, appId);
-            ps.setLong(2, userId);
-            ps.setLong(3, sessionId);
+            ps.setString(1, appId);
+            ps.setString(2, userId);
+            ps.setString(3, sessionId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     result.add(LOAD_MAPPER.readValue(rs.getString(1), HistoryInfos.class));
@@ -64,7 +64,7 @@ public class SqliteConversationStorage implements ConversationStorage {
     }
 
     @Override
-    public void append(Long appId, Long userId, Long sessionId, HistoryInfos turn) {
+    public void append(String appId, String userId, String sessionId, HistoryInfos turn) {
         String sql = """
                 INSERT OR IGNORE INTO conversation_turns
                     (id, app_id, user_id, session_id, created_at, data)
@@ -72,9 +72,9 @@ public class SqliteConversationStorage implements ConversationStorage {
                 """;
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, turn.getId());
-            ps.setLong(2, appId);
-            ps.setLong(3, userId);
-            ps.setLong(4, sessionId);
+            ps.setString(2, appId);
+            ps.setString(3, userId);
+            ps.setString(4, sessionId);
             ps.setLong(5, turn.getCreatedAt());
             ps.setString(6, SAVE_MAPPER.writeValueAsString(turn));
             ps.execute();
@@ -84,15 +84,15 @@ public class SqliteConversationStorage implements ConversationStorage {
     }
 
     @Override
-    public void replace(Long appId, Long userId, Long sessionId, List<HistoryInfos> compacted) {
+    public void replace(String appId, String userId, String sessionId, List<HistoryInfos> compacted) {
         try {
             conn.setAutoCommit(false);
             try {
                 try (PreparedStatement del = conn.prepareStatement(
                         "DELETE FROM conversation_turns WHERE app_id=? AND user_id=? AND session_id=?")) {
-                    del.setLong(1, appId);
-                    del.setLong(2, userId);
-                    del.setLong(3, sessionId);
+                    del.setString(1, appId);
+                    del.setString(2, userId);
+                    del.setString(3, sessionId);
                     del.execute();
                 }
                 for (HistoryInfos turn : compacted) {
@@ -102,9 +102,9 @@ public class SqliteConversationStorage implements ConversationStorage {
                             VALUES (?, ?, ?, ?, ?, ?)
                             """)) {
                         ins.setString(1, turn.getId());
-                        ins.setLong(2, appId);
-                        ins.setLong(3, userId);
-                        ins.setLong(4, sessionId);
+                        ins.setString(2, appId);
+                        ins.setString(3, userId);
+                        ins.setString(4, sessionId);
                         ins.setLong(5, turn.getCreatedAt());
                         ins.setString(6, SAVE_MAPPER.writeValueAsString(turn));
                         ins.execute();
@@ -123,12 +123,12 @@ public class SqliteConversationStorage implements ConversationStorage {
     }
 
     @Override
-    public void clear(Long appId, Long userId, Long sessionId) {
+    public void clear(String appId, String userId, String sessionId) {
         String sql = "DELETE FROM conversation_turns WHERE app_id=? AND user_id=? AND session_id=?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, appId);
-            ps.setLong(2, userId);
-            ps.setLong(3, sessionId);
+            ps.setString(1, appId);
+            ps.setString(2, userId);
+            ps.setString(3, sessionId);
             ps.execute();
         } catch (Exception e) {
             throw new RuntimeException("clear failed for session " + sessionId, e);

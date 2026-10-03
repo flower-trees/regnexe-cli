@@ -29,6 +29,7 @@ public class RexDatabase implements AutoCloseable {
             st.execute("PRAGMA journal_mode=WAL");
         }
         initSchema();
+        migrateConversationSessionIdsToNames();
     }
 
     public Connection connection() {
@@ -66,7 +67,7 @@ public class RexDatabase implements AutoCloseable {
                         id         TEXT    NOT NULL,
                         app_id     INTEGER NOT NULL DEFAULT 0,
                         user_id    INTEGER NOT NULL DEFAULT 0,
-                        session_id INTEGER NOT NULL,
+                        session_id TEXT    NOT NULL,
                         created_at INTEGER NOT NULL,
                         data       TEXT    NOT NULL,
                         PRIMARY KEY (app_id, user_id, session_id, id)
@@ -143,27 +144,47 @@ public class RexDatabase implements AutoCloseable {
         return result;
     }
 
-    /**
-     * Deletes all conversation turns for the given session name.
-     * Uses the same hashCode conversion that RegnexeAgent uses internally.
-     */
+    /** Deletes all conversation turns for the given session name. */
     public void clearConversation(String sessionName) throws SQLException {
-        long longId = (long) sessionName.hashCode();
         String sql = "DELETE FROM conversation_turns WHERE app_id=0 AND user_id=0 AND session_id=?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setLong(1, longId);
+            ps.setString(1, sessionName);
             ps.execute();
         }
     }
 
     /**
      * Loads every conversation turn recorded for the given session name, oldest first — the
-     * same {@code sessionName.hashCode()} conversion {@link #clearConversation} uses, and the
      * same {@code SqliteConversationStorage} deserialization the running agent itself reads
      * through, so this returns exactly what the running agent would see for this session.
      */
     public java.util.List<org.salt.jlangchain.core.history.HistoryInfos> loadConversation(String sessionName) {
-        return new SqliteConversationStorage(this).loadAll(0L, 0L, (long) sessionName.hashCode());
+        return new SqliteConversationStorage(this).loadAll("0", "0", sessionName);
+    }
+
+    /**
+     * One-time, idempotent migration: {@code conversation_turns.session_id} used to store
+     * {@code sessionName.hashCode()} (a lossy 32-bit int — j-langchain's {@code ConversationStorage}
+     * interface required a {@code Long}, and two different session names could in principle
+     * collide on the same hash, silently mixing their histories). Now that the interface takes a
+     * {@code String}, this rewrites any row still keyed by an old hash back to the real session
+     * name, using {@code sessions} (which still has every current name) to recompute each name's
+     * old hash and match against it. Safe to run on every startup: once a row is migrated, its
+     * {@code session_id} is the real name, no longer a bare integer, so it never matches again.
+     */
+    private void migrateConversationSessionIdsToNames() throws SQLException {
+        List<SessionRow> sessions = listSessions();
+        String sql = "UPDATE conversation_turns SET session_id = ? WHERE session_id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (SessionRow row : sessions) {
+                String name = row.getName();
+                long oldHash = (long) name.hashCode();
+                ps.setString(1, name);
+                ps.setLong(2, oldHash);
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

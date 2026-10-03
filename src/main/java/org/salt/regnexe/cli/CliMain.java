@@ -577,8 +577,7 @@ public class CliMain implements CommandLineRunner {
                 ))
                 .build();
         try {
-            long sessionKey = (long) state.getSessionId().hashCode();
-            new SqliteConversationStorage(db).append(0L, 0L, sessionKey, turn);
+            new SqliteConversationStorage(db).append("0", "0", state.getSessionId(), turn);
         } catch (Exception ignored) {
             // Paused task persistence lives in task_store; session summary is best-effort context.
         }
