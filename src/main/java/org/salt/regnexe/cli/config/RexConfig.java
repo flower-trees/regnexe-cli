@@ -31,6 +31,27 @@ public class RexConfig {
     private WorkspaceConfig workspace = new WorkspaceConfig();
     private UiConfig ui = new UiConfig();
     private SkillsConfig skills = new SkillsConfig();
+    private OpikConfig opik = new OpikConfig();
+
+    /**
+     * Optional trace export to an Opik server (https://github.com/comet-ml/opik) over OTLP/HTTP.
+     * Off by default: traces carry prompts, file contents and tool output, so nothing leaves the
+     * process unless this is explicitly enabled.
+     */
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class OpikConfig {
+        private boolean enabled = false;
+        /** OTLP base URL; spans are POSTed to {@code <endpoint>/v1/traces}. Default is a local self-hosted Opik. */
+        private String endpoint = "http://localhost:5173/api/v1/private/otel";
+        private String project = "regnexe-cli";
+        /** Only needed for Comet-hosted Opik; a local deployment has no auth. */
+        private String apiKey;
+        /** Only needed for Comet-hosted Opik. */
+        private String workspace;
+        /** Prompts / tool output longer than this are cut before export. */
+        private int maxTextChars = 20000;
+    }
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)

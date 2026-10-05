@@ -43,6 +43,8 @@ import org.salt.regnexe.cli.db.RexDatabase;
 import org.salt.regnexe.cli.db.SqliteConversationStorage;
 import org.salt.regnexe.cli.db.SqliteTaskStore;
 import org.salt.regnexe.cli.event.CliEventListener;
+import org.salt.regnexe.cli.event.OpikEventListener;
+import org.salt.regnexe.cli.observe.OtlpSpanExporter;
 import org.salt.regnexe.cli.session.SessionContext;
 import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
@@ -111,6 +113,10 @@ public class CliMain implements CommandLineRunner {
     // connections for sse/http), so it must be destroy()ed before buildAgent() replaces it with a
     // fresh one, and on process exit.
     private McpClient activeMcpClient;
+
+    // Created on first buildAgent() when opik.enabled is set, then shared across agent rebuilds
+    // (it owns the export thread and any spans still queued).
+    private OtlpSpanExporter opikExporter;
 
     public static void main(String[] args) {
         if (hasArg(args, "--help") || hasArg(args, "-h")) {
@@ -316,6 +322,11 @@ public class CliMain implements CommandLineRunner {
                 try { activeMcpClient.destroy(); } catch (Exception ignored) {}
             }
         }, "rex-mcp-shutdown"));
+
+        // Spans are exported asynchronously; give the tail of the last task a moment to go out.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (opikExporter != null) opikExporter.flush(2000);
+        }, "rex-opik-shutdown"));
 
         // AtomicReference lets the pauseAction lambda always call the most recent agent instance,
         // even after /resume rebuilds the agent.
@@ -738,6 +749,28 @@ public class CliMain implements CommandLineRunner {
         return null;
     }
 
+    /** Null when Opik tracing is off (the default). */
+    private OpikEventListener buildOpikListener(SessionContext ctx, RexConfig config) {
+        RexConfig.OpikConfig opik = config.getOpik();
+        if (!opik.isEnabled()) return null;
+        if (opikExporter == null) {
+            opikExporter = new OtlpSpanExporter(opik);
+        }
+        RexConfig.ModelConfig mc = config.getModel();
+        var main = new OpikEventListener.ModelRef(mc.getVendor(), config.effectiveModel());
+        var planner = isBlank(mc.getPlannerName()) ? main
+                : new OpikEventListener.ModelRef(config.effectivePlannerVendor(), mc.getPlannerName());
+        var reflector = isBlank(mc.getReflectorName()) ? main
+                : new OpikEventListener.ModelRef(config.effectiveReflectorVendor(), mc.getReflectorName());
+        // ctx is read per task, not captured by value: /resume switches its session id in place.
+        return new OpikEventListener(
+                opikExporter, ctx::getSessionId, opik.getMaxTextChars(), main, planner, reflector);
+    }
+
+    private static boolean isBlank(String s) {
+        return s == null || s.isBlank();
+    }
+
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
                                     CliRenderer renderer,
                                     RexDatabase db, Runnable pauseAction) {
@@ -747,6 +780,7 @@ public class CliMain implements CommandLineRunner {
                 .withDefaultModel(config.getModel().getVendor(), config.effectiveModel(),
                         deepseekThinkingKwargs(config.effectiveModel()))
                 .withEventListener(new CliEventListener(renderer))
+                .withEventListener(buildOpikListener(ctx, config))
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
                 .withMaxConsecutiveToolFailures(ac.getMaxConsecutiveToolFailures())
