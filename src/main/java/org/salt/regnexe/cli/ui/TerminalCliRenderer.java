@@ -13,11 +13,28 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class TerminalCliRenderer implements CliRenderer {
 
-    private static final int MAX_TOOL_RESULT_CHARS = 300;
+    private static final int MAX_TOOL_RESULT_LINES = 20;
+    private static final int MAX_LINE_CHARS = 200;
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    // Tools that already print their own dedicated preview (bashCommand/filePreview/editPreview)
+    // before this call's TOOL_CALLED line renders — showing their args here too is pure
+    // duplication. mcp_tool:* calls are excluded separately below (mcpToolPreview covers all of
+    // them). Tools with no dedicated preview (read_file, list_files, search_files, a skill/
+    // sub-agent's own direct invocation) still show their args here — it's the only place they
+    // appear.
+    private static final Set<String> HAS_DEDICATED_PREVIEW = Set.of("bash", "write_file", "edit_file");
+
+    // CapabilityExecutor's event text is a flat, human-readable string by design (AgentEvent has
+    // no structured per-tool-call fields), so these are parsed by convention rather than a real
+    // schema — see formatToolCallLabel()/formatToolResult() in CapabilityExecutor for the producer
+    // side. BashTool is the only producer of the "Exit: N" shape today.
+    private static final Pattern BASH_EXIT_HEADER = Pattern.compile("\\AExit: (-?\\d+)\\n(─+\\n)?");
 
     private final Terminal terminal;
     private final PrintWriter out;
@@ -102,7 +119,10 @@ public class TerminalCliRenderer implements CliRenderer {
     @Override
     public void toolCalled(String text) {
         clearThinkingLine();
-        String display = simplifyToolText(text);
+        ToolCallParts parts = parseToolCall(text);
+        StringBuilder display = new StringBuilder(parts.display());
+        if (parts.scope() != null) display.append(' ').append(parts.scope());
+        if (parts.showArgs()) display.append(' ').append(parts.args());
         if (theme.theme() == CliTheme.CODEX) {
             out.println();
             out.println("┌ " + display);
@@ -114,12 +134,28 @@ public class TerminalCliRenderer implements CliRenderer {
 
     @Override
     public void toolResult(String text) {
-        String value = truncate(text, MAX_TOOL_RESULT_CHARS);
-        if (theme.theme() == CliTheme.CODEX) {
-            out.println("└ " + value);
+        String observation = stripResultLabel(text);
+        Matcher bashMatch = BASH_EXIT_HEADER.matcher(observation);
+        String statusLine;
+        String body;
+        if (bashMatch.find()) {
+            int exitCode = Integer.parseInt(bashMatch.group(1));
+            statusLine = (exitCode == 0 ? green("✓") : red("✗")) + " exit " + exitCode;
+            body = observation.substring(bashMatch.end());
+        } else if (observation.startsWith("Error")) {
+            statusLine = red("✗") + " error";
+            body = observation;
         } else {
-            out.println("  ◀ " + value);
+            String trimmed = observation.strip();
+            int nl = trimmed.indexOf('\n');
+            statusLine = truncateLine(nl < 0 ? trimmed : trimmed.substring(0, nl));
+            body = nl < 0 ? "" : trimmed.substring(nl + 1);
         }
+
+        String marker = theme.theme() == CliTheme.CODEX ? "└ " : "  ◀ ";
+        String indent = theme.theme() == CliTheme.CODEX ? "│ " : "    ";
+        out.println(marker + statusLine);
+        printToolResultBody(body, indent);
         out.flush();
     }
 
@@ -436,21 +472,65 @@ public class TerminalCliRenderer implements CliRenderer {
         }
     }
 
-    private String truncate(String text, int max) {
-        if (text == null) return "";
-        String t = text.trim();
-        return t.length() <= max ? t : t.substring(0, max) + "...";
+    /**
+     * One TOOL_CALLED event's text, broken into its pieces. The producer format is
+     * {@code "[<scope>] <type>:<name> <args-json>"} (scope/type both optional) — see
+     * CapabilityExecutor.labelToolCall(). {@code showArgs} is false when this tool already prints
+     * its own dedicated preview (bash command, file write/edit diff, MCP call args), so the args
+     * aren't shown twice.
+     */
+    private record ToolCallParts(String scope, String display, String args, boolean showArgs) {}
+
+    private ToolCallParts parseToolCall(String text) {
+        String t = text == null ? "" : text.trim();
+        String scope = null;
+        if (t.startsWith("[")) {
+            int end = t.indexOf(']');
+            if (end > 0) {
+                scope = t.substring(0, end + 1);
+                t = t.substring(end + 1).trim();
+            }
+        }
+        int space = t.indexOf(' ');
+        String typeAndName = space > 0 ? t.substring(0, space) : t;
+        String args = space > 0 ? t.substring(space + 1).trim() : "";
+        boolean isMcpTool = typeAndName.startsWith("mcp_tool:");
+        String bareName = isMcpTool ? typeAndName.substring("mcp_tool:".length()) : typeAndName;
+        String display = isMcpTool ? bareName : typeAndName;
+        boolean showArgs = !args.isBlank() && !isMcpTool && !HAS_DEDICATED_PREVIEW.contains(bareName);
+        return new ToolCallParts(scope, display, args, showArgs);
     }
 
-    private String simplifyToolText(String text) {
+    /**
+     * Drops the "[&lt;scope&gt;] &lt;type&gt;:&lt;name&gt; -&gt; " label CapabilityExecutor
+     * prepends to every TOOL_RESULT event (formatToolResult()) — toolCalled() just printed the
+     * same scope/type/name, so repeating it here is pure duplication. The label itself never
+     * contains " -> " (only the observation that follows might, in principle), so splitting on the
+     * first occurrence is safe for the real producer format even though it's a string convention,
+     * not a real schema.
+     */
+    private String stripResultLabel(String text) {
         if (text == null) return "";
-        String t = text.trim();
-        if (t.startsWith("mcp_tool:bash")) return "bash";
-        if (t.startsWith("mcp_tool:")) {
-            int space = t.indexOf(' ');
-            return space > 0 ? t.substring("mcp_tool:".length(), space) : t.substring("mcp_tool:".length());
+        int idx = text.indexOf(" -> ");
+        return idx >= 0 ? text.substring(idx + 4) : text;
+    }
+
+    private void printToolResultBody(String body, String indent) {
+        if (body == null) return;
+        String trimmed = body.strip();
+        if (trimmed.isEmpty()) return;
+        String[] lines = trimmed.split("\n", -1);
+        int shown = Math.min(lines.length, MAX_TOOL_RESULT_LINES);
+        for (int i = 0; i < shown; i++) {
+            out.println(indent + truncateLine(lines[i]));
         }
-        return t;
+        if (lines.length > shown) {
+            out.println(indent + "... (" + (lines.length - shown) + " more lines)");
+        }
+    }
+
+    private String truncateLine(String line) {
+        return line.length() <= MAX_LINE_CHARS ? line : line.substring(0, MAX_LINE_CHARS) + "…";
     }
 
     private String dim(String text) {
