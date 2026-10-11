@@ -11,6 +11,8 @@ public interface CliRenderer {
     void executing();
     void toolCalled(String text);
     void toolResult(String text);
+    /** The write_todos checklist changed — {@code json} is the todo list as a JSON array. */
+    void todosUpdated(String json);
     void bashCommand(String command);
     /** Preview shown before a write_file confirmation: the target path and content to write. */
     void filePreview(String path, String content, boolean isNew);

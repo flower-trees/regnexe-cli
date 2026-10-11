@@ -10,6 +10,7 @@ import org.salt.regnexe.cli.session.SessionContext;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,7 +29,7 @@ public class TerminalCliRenderer implements CliRenderer {
     // them). Tools with no dedicated preview (read_file, list_files, search_files, a skill/
     // sub-agent's own direct invocation) still show their args here — it's the only place they
     // appear.
-    private static final Set<String> HAS_DEDICATED_PREVIEW = Set.of("bash", "write_file", "edit_file");
+    private static final Set<String> HAS_DEDICATED_PREVIEW = Set.of("bash", "write_file", "edit_file", "write_todos");
 
     // CapabilityExecutor's event text is a flat, human-readable string by design (AgentEvent has
     // no structured per-tool-call fields), so these are parsed by convention rather than a real
@@ -127,7 +128,13 @@ public class TerminalCliRenderer implements CliRenderer {
             out.println();
             out.println("┌ " + display);
         } else {
-            out.println("\n  ▶ " + display);
+            // The one separator in this whole render path: marks the boundary between two
+            // different tool calls. Everything inside one call (▶ → preview/confirm → ◀) prints
+            // with no separators of its own — see toolResult()/bashCommand()/etc. Dimmed so it
+            // reads as structure, not content — stays visually distinct from the ▶/◀ lines even
+            // with zero indentation separating them.
+            out.println("  " + dim("─".repeat(44)));
+            out.println("  ▶ " + display);
         }
         out.flush();
     }
@@ -160,13 +167,29 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
+    public void todosUpdated(String json) {
+        List<TodoEntry> items = parseTodoEntries(json);
+        if (items.isEmpty()) return;
+        if (theme.theme() == CliTheme.CODEX) {
+            out.println("│ Todos:");
+            for (TodoEntry item : items) {
+                out.println("│ " + todoMarker(item.status()) + " " + item.content());
+            }
+        } else {
+            out.println("  Todos:");
+            for (TodoEntry item : items) {
+                out.println("    " + todoMarker(item.status()) + " " + item.content());
+            }
+        }
+        out.flush();
+    }
+
+    @Override
     public void bashCommand(String command) {
         if (theme.theme() == CliTheme.CODEX) {
             out.println("│ $ " + command);
         } else {
-            out.println();
             out.println("  $ " + command);
-            out.println("  " + "─".repeat(50));
         }
         out.flush();
     }
@@ -179,22 +202,19 @@ public class TerminalCliRenderer implements CliRenderer {
         if (theme.theme() == CliTheme.CODEX) {
             out.println("│ " + header);
             for (int i = 0; i < preview; i++) {
-                out.printf("│ %4d  %s%n", i + 1, lines[i]);
+                out.printf("│ %4d  %s%n", i + 1, truncateLine(lines[i]));
             }
             if (lines.length > preview) {
                 out.println("│ ... (" + (lines.length - preview) + " more lines)");
             }
         } else {
-            out.println();
             out.println("  Write file: " + header);
-            out.println("  " + "─".repeat(44));
             for (int i = 0; i < preview; i++) {
-                out.printf("  %4d  %s%n", i + 1, lines[i]);
+                out.printf("  %4d  %s%n", i + 1, truncateLine(lines[i]));
             }
             if (lines.length > preview) {
                 out.printf("  ... (%d more lines)%n", lines.length - preview);
             }
-            out.println("  " + "─".repeat(44));
         }
         out.flush();
     }
@@ -204,22 +224,19 @@ public class TerminalCliRenderer implements CliRenderer {
         if (theme.theme() == CliTheme.CODEX) {
             out.println("│ " + path);
             for (String line : oldString.split("\n", -1)) {
-                out.println("│ " + red("- " + line));
+                out.println("│ " + red("- " + truncateLine(line)));
             }
             for (String line : newString.split("\n", -1)) {
-                out.println("│ " + green("+ " + line));
+                out.println("│ " + green("+ " + truncateLine(line)));
             }
         } else {
-            out.println();
             out.println("  Edit file: " + path);
-            out.println("  " + "─".repeat(44));
             for (String line : oldString.split("\n", -1)) {
-                out.println("  " + red("- " + line));
+                out.println("  " + red("- " + truncateLine(line)));
             }
             for (String line : newString.split("\n", -1)) {
-                out.println("  " + green("+ " + line));
+                out.println("  " + green("+ " + truncateLine(line)));
             }
-            out.println("  " + "─".repeat(44));
         }
         out.flush();
     }
@@ -235,11 +252,9 @@ public class TerminalCliRenderer implements CliRenderer {
         if (theme.theme() == CliTheme.CODEX) {
             out.println("│ " + server + "_" + tool + " " + argsJson);
         } else {
-            out.println();
-            out.println("  MCP call: " + server + "_" + tool);
-            out.println("  " + "─".repeat(44));
+            // No "MCP call: X" header here — toolCalled() already printed server_tool on the ▶
+            // line right above this.
             out.println("  " + argsJson);
-            out.println("  " + "─".repeat(44));
         }
         out.flush();
     }
@@ -401,9 +416,10 @@ public class TerminalCliRenderer implements CliRenderer {
         String label = Character.toUpperCase(verb.charAt(0)) + verb.substring(1);
         out.print("  " + label + "? [y/N/pause/always] ");
         out.flush();
+        // No trailing println() here — the terminal's own echo of the user's Enter keypress
+        // already advances to a new line (confirmLine runs in cooked mode, unlike the arrow-key
+        // confirmMenu variant); adding another would reopen the gap toolResult() is meant to close.
         String answer = readLine().trim().toLowerCase();
-        out.println();
-        out.flush();
         if (answer.equals("y") || answer.equals("yes")) return ConfirmChoice.YES;
         if (answer.equals("a") || answer.equals("always")) return ConfirmChoice.ALWAYS;
         if (answer.equals("pause") || answer.equals("/pause") || answer.equals("p")) return ConfirmChoice.PAUSE;
@@ -531,6 +547,33 @@ public class TerminalCliRenderer implements CliRenderer {
 
     private String truncateLine(String line) {
         return line.length() <= MAX_LINE_CHARS ? line : line.substring(0, MAX_LINE_CHARS) + "…";
+    }
+
+    private record TodoEntry(String content, String status) {}
+
+    private List<TodoEntry> parseTodoEntries(String json) {
+        List<TodoEntry> result = new ArrayList<>();
+        try {
+            JsonNode arr = MAPPER.readTree(json);
+            if (arr.isArray()) {
+                for (JsonNode node : arr) {
+                    result.add(new TodoEntry(node.path("content").asText(""), node.path("status").asText("")));
+                }
+            }
+        } catch (Exception ignored) {
+            // Malformed/empty todo JSON — show nothing rather than a parse error for a
+            // purely-informational checklist.
+        }
+        return result;
+    }
+
+    private String todoMarker(String status) {
+        String s = status == null ? "" : status.toUpperCase();
+        return switch (s) {
+            case "COMPLETED" -> green("☑");
+            case "IN_PROGRESS" -> yellow("◐");
+            default -> "☐";
+        };
     }
 
     private String dim(String text) {

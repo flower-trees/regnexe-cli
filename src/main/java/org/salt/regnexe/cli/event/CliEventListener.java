@@ -29,6 +29,7 @@ public class CliEventListener extends AbstractEventListener {
                  EXECUTION_STARTED,
                  TOOL_CALLED,
                  TOOL_RESULT,
+                 TODOS_UPDATED,
                  TASK_TOKEN_SUMMARY -> true;
             // LLM_RESPONDED / *_LLM_RESPONDED contain the full execution context,
             // not just the answer text. Clean answer is printed via AgentResult.getFinalText().
@@ -60,6 +61,10 @@ public class CliEventListener extends AbstractEventListener {
 
             case TOOL_RESULT -> {
                 renderer.toolResult(event.getText());
+            }
+
+            case TODOS_UPDATED -> {
+                renderer.todosUpdated(event.getText());
             }
 
             // Per-task token summary, emitted automatically by TokenAggregatingEventListener

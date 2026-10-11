@@ -148,35 +148,57 @@ executing
 
 ### 4.4 工具调用
 
-Bash：
+> 以下是 Minimal 主题（当前默认配置实际在用）的真实渲染结果，不是设想稿。
 
 ```text
-┌ bash
-│ echo "hello"
-└ exit 0
-  hello
-```
-
-读文件：
-
-```text
-┌ read_file pom.xml
-└ 120 lines
-```
-
-写文件确认：
-
-```text
-write src/main/java/App.java
-Apply? [y/N/pause]
+  ────────────────────────────────────────────
+  ▶ bash [skill:robot-article-writing]
+  $ echo "hello"
+  Run? [y/N/pause/always] always
+  ◀ ✓ exit 0
+    hello
+  ────────────────────────────────────────────
+  ▶ bash [skill:robot-article-writing]
+  $ cd ~ 2>/dev/null
+  ◀ ✗ error
+    Error: command references a path outside the workspace (~). ...
+  ────────────────────────────────────────────
+  ▶ tavily_tavily_search [skill:robot-article-writing]
+  {"max_results":8,"query":"...","time_range":"week"}
+  ◀ Detailed Results:
+    Title: ...
+  ────────────────────────────────────────────
+  ▶ write_todos [skill:robot-article-writing]
+  Todos:
+    ☑ Search industry news
+    ◐ Write article draft
+    ☐ Upload cover image
+  ◀ Updated 3 todo(s): 1 pending, 1 in progress, 1 completed.
 ```
 
 规则：
 
-- 工具名是第一视觉锚点。
-- 参数只展示关键字段，不直接 dump 整个 JSON。
-- 成功结果最多展示摘要，长输出截断。
-- 详细 JSON 只在 debug 模式展示。
+- **一次调用 = 一个连续单元，内部不插空行/分隔线。** 唯一的分隔线出现在两次不同调用
+  之间（`toolCalled()` 开头），用 `dim()` 调暗，跟 `▶`/`◀`/正文的正常亮度区分出"这是
+  结构标记，不是内容"。调用内部（`▶` → 预览/确认 → `◀`）全部顶格、不缩进，只靠符号
+  分组——之前版本在这几步之间各自插了一个空行，会把一次调用拆成看起来互不相关的几段。
+- `▶` 行格式固定是 `<name> [<scope>]`：工具名在前（每行都在变，最该优先看到），scope
+  方括号放最后（一个 round 里基本不变，放前面只会让人反复跳过重复内容）。`mcp_tool:`
+  类型前缀直接丢掉（纯噪音，不管是 `bash` 还是 `tavily_tavily_search` 都一样）；
+  `skill:`/`subagent:` 前缀保留在 scope 括号里，因为它是有效信息（谁在调用）。
+- **已经有专属预览的工具不在 `▶` 行重复参数**：`bash`（`$ command`）、
+  `write_file`/`edit_file`（文件内容/diff 预览）、`write_todos`（清单本身）、
+  通用 MCP 工具（参数 JSON）——这几个看 `▶` 下面一行就知道参数是什么，不用再在 `▶`
+  里复述一遍。没有专属预览的工具（`read_file`/`list_files`/`search_files`，以及裸调
+  用的 skill/subagent）才在 `▶` 行自带参数，因为那是唯一能看到参数的地方。
+- `◀` 结果：识别 bash 的 `Exit: N` 格式，渲染成 `✓ exit 0`（绿）/`✗ exit N`（红）；
+  非 bash 结果用首行当摘要。正文统一按 4 空格缩进、按**行数**截断
+  （`... (N more lines)`，复用 `filePreview()` 已有的提示风格），单行过长再按字符数
+  截断（`…`）。但**确认前**要展示的内容（bash 命令本身、MCP 调用参数、文件预览的
+  每一行）不做字符截断——用户要看到完整的"将要批准的东西"，截断等于在没看全的情况下
+  批准执行。
+- `write_todos` 的清单复用同一条"调用之间分隔、调用内部不分隔"规则，三种状态用
+  `☑`（绿，completed）/`◐`（黄，in_progress）/`☐`（默认色，pending）区分。
 
 ### 4.5 暂停和恢复
 
