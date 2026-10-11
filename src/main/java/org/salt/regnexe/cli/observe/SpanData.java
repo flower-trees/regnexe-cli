@@ -13,7 +13,7 @@ public class SpanData {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final String traceId;
-    private final String spanId = randomHex(8);
+    private final String spanId;
     private final String parentSpanId;
     private final String name;
     private final long startMs;
@@ -21,8 +21,9 @@ public class SpanData {
     private String error;
     private final Map<String, Object> attributes = new LinkedHashMap<>();
 
-    public SpanData(String traceId, String parentSpanId, String name, long startMs) {
+    public SpanData(String traceId, String spanId, String parentSpanId, String name, long startMs) {
         this.traceId = traceId;
+        this.spanId = spanId != null ? spanId : randomHex(8);
         this.parentSpanId = parentSpanId;
         this.name = name;
         this.startMs = startMs;

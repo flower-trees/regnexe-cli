@@ -20,6 +20,8 @@ import java.util.Optional;
 public class SqliteTaskStore implements TaskStore {
 
     private static final ObjectMapper MAPPER = JsonUtil.objectMapper;
+    // Saved agent steps hold AIMessage / ToolMessage, which the shared mapper cannot instantiate.
+    private static final ObjectMapper LOAD_MAPPER = MessageDeserializer.loadMapper();
 
     private final Connection conn;
 
@@ -53,7 +55,7 @@ public class SqliteTaskStore implements TaskStore {
             ps.setString(1, taskId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return Optional.of(MAPPER.readValue(rs.getString(1), TaskExecutionState.class));
+                    return Optional.of(LOAD_MAPPER.readValue(rs.getString(1), TaskExecutionState.class));
                 }
             }
         } catch (Exception e) {
@@ -75,7 +77,7 @@ public class SqliteTaskStore implements TaskStore {
             ps.setString(1, sessionId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    result.add(MAPPER.readValue(rs.getString(1), TaskExecutionState.class));
+                    result.add(LOAD_MAPPER.readValue(rs.getString(1), TaskExecutionState.class));
                 }
             }
         } catch (Exception e) {
