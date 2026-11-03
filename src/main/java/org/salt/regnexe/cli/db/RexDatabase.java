@@ -6,8 +6,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Manages the single SQLite connection and schema for ~/.rex/rex.db.
@@ -15,21 +19,33 @@ import java.util.Optional;
  */
 public class RexDatabase implements AutoCloseable {
 
-    private static final Path DB_PATH =
-            Path.of(System.getProperty("user.home"), ".rex", "rex.db");
-
     private final Connection conn;
 
     public RexDatabase() throws Exception {
-        Files.createDirectories(DB_PATH.getParent());
-        conn = DriverManager.getConnection("jdbc:sqlite:" + DB_PATH);
-        conn.setAutoCommit(true);
-        // WAL mode: allows concurrent reads while a write is in progress.
-        try (Statement st = conn.createStatement()) {
-            st.execute("PRAGMA journal_mode=WAL");
+        this(Path.of(System.getProperty("user.home"), ".rex", "rex.db"));
+    }
+
+    /** Opens an explicit database path, also useful for isolated verification. */
+    public RexDatabase(Path databasePath) throws Exception {
+        Path absolutePath = databasePath.toAbsolutePath();
+        Files.createDirectories(absolutePath.getParent());
+        conn = DriverManager.getConnection("jdbc:sqlite:" + absolutePath);
+        try {
+            conn.setAutoCommit(true);
+            // WAL mode: allows concurrent reads while a write is in progress.
+            try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA journal_mode=WAL");
+            }
+            initSchema();
+            migrateConversationSessionIdsToNames();
+        } catch (Exception e) {
+            try {
+                conn.close();
+            } catch (SQLException closeError) {
+                e.addSuppressed(closeError);
+            }
+            throw e;
         }
-        initSchema();
-        migrateConversationSessionIdsToNames();
     }
 
     public Connection connection() {
@@ -163,27 +179,87 @@ public class RexDatabase implements AutoCloseable {
     }
 
     /**
-     * One-time, idempotent migration: {@code conversation_turns.session_id} used to store
-     * {@code sessionName.hashCode()} (a lossy 32-bit int — j-langchain's {@code ConversationStorage}
-     * interface required a {@code Long}, and two different session names could in principle
-     * collide on the same hash, silently mixing their histories). Now that the interface takes a
-     * {@code String}, this rewrites any row still keyed by an old hash back to the real session
-     * name, using {@code sessions} (which still has every current name) to recompute each name's
-     * old hash and match against it. Safe to run on every startup: once a row is migrated, its
-     * {@code session_id} is the real name, no longer a bare integer, so it never matches again.
+     * Migrates unambiguous legacy hash keys once, in a transaction. A key that is already a
+     * session name, maps to several names, or would collide with a destination turn is preserved
+     * for manual recovery. Never guess ownership of ambiguous history. Only CLI-owned (0/0)
+     * conversation rows are migrated; other applications' rows are untouched.
      */
     private void migrateConversationSessionIdsToNames() throws SQLException {
-        List<SessionRow> sessions = listSessions();
-        String sql = "UPDATE conversation_turns SET session_id = ? WHERE session_id = ?";
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            for (SessionRow row : sessions) {
-                String name = row.getName();
-                long oldHash = (long) name.hashCode();
-                ps.setString(1, name);
-                ps.setLong(2, oldHash);
-                ps.addBatch();
+        conn.setAutoCommit(false);
+        try {
+            try (Statement st = conn.createStatement()) {
+                st.execute("CREATE TABLE IF NOT EXISTS rex_schema_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+                try (ResultSet rs = st.executeQuery(
+                        "SELECT value FROM rex_schema_metadata WHERE key = 'conversation_session_ids'")) {
+                    if (rs.next()) {
+                        if (!"names-v1".equals(rs.getString(1))) {
+                            throw new SQLException("Unsupported conversation session ID format");
+                        }
+                        conn.commit();
+                        return;
+                    }
+                }
             }
-            ps.executeBatch();
+
+            Set<String> names = new HashSet<>();
+            Map<String, List<String>> namesByHash = new HashMap<>();
+            for (SessionRow session : listSessions()) {
+                String name = session.getName();
+                names.add(name);
+                namesByHash.computeIfAbsent(Integer.toString(name.hashCode()), key -> new ArrayList<>()).add(name);
+            }
+            List<String> keys = new ArrayList<>();
+            try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(
+                    "SELECT DISTINCT session_id FROM conversation_turns WHERE app_id=0 AND user_id=0")) {
+                while (rs.next()) keys.add(rs.getString(1));
+            }
+            String conflictSql = """
+                    SELECT 1 FROM conversation_turns src JOIN conversation_turns dst
+                    ON src.app_id=dst.app_id AND src.user_id=dst.user_id AND src.id=dst.id
+                    WHERE src.app_id=0 AND src.user_id=0 AND src.session_id=? AND dst.session_id=? LIMIT 1
+                    """;
+            try (PreparedStatement conflict = conn.prepareStatement(conflictSql);
+                 PreparedStatement update = conn.prepareStatement(
+                         "UPDATE conversation_turns SET session_id=? WHERE app_id=0 AND user_id=0 AND session_id=?")) {
+                for (String key : keys) {
+                    List<String> candidates = namesByHash.get(key);
+                    if (candidates == null) continue;
+                    if (names.contains(key) || candidates.size() != 1) {
+                        System.err.println("[warn] Preserved ambiguous conversation key '" + key
+                                + "'; inspect a database backup before manual recovery.");
+                        continue;
+                    }
+                    String name = candidates.get(0);
+                    // A numeric destination may itself contain another session's old hash
+                    // records. Do not merge known legacy history into that ambiguous bucket.
+                    if (keys.contains(name) && namesByHash.containsKey(name)) {
+                        System.err.println("[warn] Preserved conversation key '" + key
+                                + "' because its destination is ambiguous; inspect a database backup.");
+                        continue;
+                    }
+                    conflict.setString(1, key);
+                    conflict.setString(2, name);
+                    try (ResultSet rs = conflict.executeQuery()) {
+                        if (rs.next()) {
+                            System.err.println("[warn] Preserved conflicting conversation key '" + key
+                                    + "'; inspect a database backup before manual recovery.");
+                            continue;
+                        }
+                    }
+                    update.setString(1, name);
+                    update.setString(2, key);
+                    update.executeUpdate();
+                }
+            }
+            try (Statement st = conn.createStatement()) {
+                st.executeUpdate("INSERT INTO rex_schema_metadata VALUES ('conversation_session_ids','names-v1')");
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            conn.rollback();
+            throw e;
+        } finally {
+            conn.setAutoCommit(true);
         }
     }
 

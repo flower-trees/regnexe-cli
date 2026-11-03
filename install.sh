@@ -3,7 +3,13 @@ set -euo pipefail
 
 APP_NAME="regnexe-cli"
 JAR_NAME="${APP_NAME}.jar"
-SOURCE_JAR="${SOURCE_JAR:-target/${JAR_NAME}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/$JAR_NAME" ]]; then
+  DEFAULT_SOURCE_JAR="$SCRIPT_DIR/$JAR_NAME"
+else
+  DEFAULT_SOURCE_JAR="$SCRIPT_DIR/target/$JAR_NAME"
+fi
+SOURCE_JAR="${SOURCE_JAR:-$DEFAULT_SOURCE_JAR}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/regnexe}"
 BIN_DIR="${BIN_DIR:-/usr/local/bin}"
 BIN_NAME="${BIN_NAME:-rex}"
@@ -13,7 +19,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 Usage: bash install.sh
 
 Environment overrides:
-  SOURCE_JAR   Path to the packaged jar. Default: target/regnexe-cli.jar
+  SOURCE_JAR   Jar path. Default: beside install.sh, then target/ beside install.sh
   INSTALL_DIR  Directory for the installed jar. Default: /opt/regnexe
   BIN_DIR      Directory for the rex wrapper. Default: /usr/local/bin
   BIN_NAME     Wrapper command name. Default: rex

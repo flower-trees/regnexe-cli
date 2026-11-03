@@ -91,7 +91,20 @@ public class CliMain implements CommandLineRunner {
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CliMain.class);
 
-    static final String VERSION = "0.1.0";
+    static final String VERSION = buildVersion();
+
+    private static String buildVersion() {
+        java.util.Properties info = new java.util.Properties();
+        try (java.io.InputStream input = CliMain.class.getResourceAsStream("/META-INF/build-info.properties")) {
+            if (input != null) {
+                info.load(input);
+                return info.getProperty("build.version", "development");
+            }
+        } catch (java.io.IOException ignored) {
+            // Running directly from an IDE may not have generated build metadata yet.
+        }
+        return "development";
+    }
 
     /** Prefix for auto-generated session names — see {@link #generateSessionName()}. */
     private static final String SESSION_NAME_PREFIX = "session";

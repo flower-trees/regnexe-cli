@@ -60,10 +60,10 @@ public class RexConfig {
         private String name = "deepseek-v4-pro";
         private String apiKey;
         /**
-         * Chat-completions endpoint URL. Only meaningful for {@code vendor: custom} (any
+         * Chat-completions endpoint URL. Useful for {@code vendor: custom} (any
          * OpenAI-Chat-Completions-compatible endpoint not covered by a named vendor —
-         * OpenRouter, Together, Groq, a self-hosted server, a corporate gateway); every named
-         * vendor already has its own built-in URL and ignores this field. Unlike every other
+         * OpenRouter, Together, Groq, a self-hosted server, a corporate gateway); named vendors'
+         * built-in URLs can also be overridden with this field. Unlike every other
          * vendor, "custom" has no sensible default endpoint to fall back to, so this is
          * effectively required when vendor is custom — see CliMain's startup wiring
          * (models.custom.chat-url) and j-langchain's CustomActuator.

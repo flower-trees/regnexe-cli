@@ -82,4 +82,4 @@ task                              AGENT_STARTED .. AGENT_COMPLETED
 - **执行中只能看到已结束的步骤。** 正在进行的那一步要等它结束才出现；一个阶段没结束时，它下面已完成的 LLM / 工具 span 已经在 Opik 里，但父节点还没到。进程被强杀时，这些 span 的父节点永远不会到。
 - **进程被杀后 trace 停在未完成状态**（没有输出和结束时间），直到这个任务被 `/resume` 并跑完。
 - **工具名和参数仍从事件文本里切出来。** 事件的 `text` 格式没有改，结构化要等 `j-langchain` 的回调改造。
-- 需要 `regnexe-agent` 带 `spanId` / `LLM_OUTPUT` 的版本（0.1.3-SNAPSHOT 的本地构建）。
+- 需要 `regnexe-agent` 带 `spanId` / `LLM_OUTPUT` 的版本（正式版 0.1.3）。
