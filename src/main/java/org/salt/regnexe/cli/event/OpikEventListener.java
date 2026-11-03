@@ -49,6 +49,7 @@ public class OpikEventListener implements AgentEventListener {
 
     private final OtlpSpanExporter exporter;
     private final Supplier<String> sessionId;
+    private final Supplier<String> sessionName;
     private final int maxTextChars;
     private final ModelRef defaultModel;
     private final ModelRef plannerModel;
@@ -56,10 +57,12 @@ public class OpikEventListener implements AgentEventListener {
 
     private final Map<String, TaskTrace> traces = new ConcurrentHashMap<>();
 
-    public OpikEventListener(OtlpSpanExporter exporter, Supplier<String> sessionId, int maxTextChars,
+    public OpikEventListener(OtlpSpanExporter exporter, Supplier<String> sessionId,
+                             Supplier<String> sessionName, int maxTextChars,
                              ModelRef defaultModel, ModelRef plannerModel, ModelRef reflectorModel) {
         this.exporter = exporter;
         this.sessionId = sessionId;
+        this.sessionName = sessionName;
         this.maxTextChars = maxTextChars;
         this.defaultModel = defaultModel;
         this.plannerModel = plannerModel;
@@ -117,7 +120,8 @@ public class OpikEventListener implements AgentEventListener {
                     t.resumed ? "resume" : "task", ts)
                     .attr("input.value", cut(text))
                     .attr("thread_id", sessionId.get())
-                    .attr("metadata.task_id", taskId);
+                    .attr("metadata.task_id", taskId)
+                    .attr("metadata.session_name", sessionName.get());
             t.input = cut(text);
             traces.put(taskId, t);
             end(t.run, ts);
@@ -184,6 +188,7 @@ public class OpikEventListener implements AgentEventListener {
                 .attr("output.value", output)
                 .attr("thread_id", sessionId.get())
                 .attr("metadata.task_id", taskId)
+                .attr("metadata.session_name", sessionName.get())
                 .attr("metadata.token_summary", t.tokenSummary);
         root.setError(error);
         root.setEndMs(ts);
