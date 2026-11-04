@@ -1,18 +1,18 @@
 # Eval-only rex config, loaded via REX_CONFIG (not ~/.rex/config.yml — the user's interactive
-# config is untouched). Same model/opik settings as ~/.rex/config.yml, but with bash/write/edit
+# config is managed separately). Official DeepSeek Flash for all roles, with bash/write/edit
 # confirmation prompts OFF: the eval harness pipes a task non-interactively (no TTY, no human to
 # answer "apply this write?"), and an unanswered confirmation always resolves to "cancelled" —
 # every write_file call in the real run just came back "Write cancelled by user." every time. Only
-# usable here because each eval case runs in its own throwaway scratch directory, never the user's
-# real filesystem.
+# intended for generated fixtures in disposable directories. This is not an OS sandbox and
+# must not be used to evaluate approval/ALWAYS behavior; those use Java/interactive tests.
 
 model:
-  vendor: custom
-  name: harness-punchbag-flash
-  chat_url: http://localhost:4000/v1/chat/completions
-  api_key: ${LITELLM_MASTER_KEY}
-  planner_name: harness-punchbag-pro
-  reflector_name: harness-punchbag-pro
+  vendor: deepseek
+  name: deepseek-flash
+  chat_url: https://api.deepseek.com/v1/chat/completions
+  api_key: ${DEEPSEEK_KEY}
+  planner_name: deepseek-flash
+  reflector_name: deepseek-flash
 
 agent:
   max_rounds: 8

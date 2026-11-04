@@ -1,0 +1,217 @@
+- id: ShellCommandExecutorTest.capturesUtf8StdoutStderrAndNonzeroExit
+  mode: deterministic
+  category: shell_lifecycle
+  description: capturesUtf8StdoutStderrAndNonzeroExit
+  test_selector: ShellCommandExecutorTest#capturesUtf8StdoutStderrAndNonzeroExit
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.silentCommandTimesOutBeforeItExits
+  mode: deterministic
+  category: shell_lifecycle
+  description: silentCommandTimesOutBeforeItExits
+  test_selector: ShellCommandExecutorTest#silentCommandTimesOutBeforeItExits
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.timeoutPreservesPartialOutputAndKillsChild
+  mode: deterministic
+  category: shell_lifecycle
+  description: timeoutPreservesPartialOutputAndKillsChild
+  test_selector: ShellCommandExecutorTest#timeoutPreservesPartialOutputAndKillsChild
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.continuousOutputDoesNotPreventTimeoutOrExceedCaptureLimit
+  mode: deterministic
+  category: shell_lifecycle
+  description: continuousOutputDoesNotPreventTimeoutOrExceedCaptureLimit
+  test_selector: ShellCommandExecutorTest#continuousOutputDoesNotPreventTimeoutOrExceedCaptureLimit
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.cancellationStopsRunningChildAndRetainsOutput
+  mode: deterministic
+  category: shell_lifecycle
+  description: cancellationStopsRunningChildAndRetainsOutput
+  test_selector: ShellCommandExecutorTest#cancellationStopsRunningChildAndRetainsOutput
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.interruptionStopsChildAndRestoresInterruptFlag
+  mode: deterministic
+  category: shell_lifecycle
+  description: interruptionStopsChildAndRestoresInterruptFlag
+  test_selector: ShellCommandExecutorTest#interruptionStopsChildAndRestoresInterruptFlag
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.childHoldingOutputPipeCannotBlockAfterShellExits
+  mode: deterministic
+  category: shell_lifecycle
+  description: childHoldingOutputPipeCannotBlockAfterShellExits
+  test_selector: ShellCommandExecutorTest#childHoldingOutputPipeCannotBlockAfterShellExits
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: ShellCommandExecutorTest.alreadyCancelledCommandNeverStarts
+  mode: deterministic
+  category: shell_lifecycle
+  description: alreadyCancelledCommandNeverStarts
+  test_selector: ShellCommandExecutorTest#alreadyCancelledCommandNeverStarts
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/ShellCommandExecutorTest.java
+- id: WorkspaceContextTest.rejectsRelativeTraversalForExistingAndMissingReadTargets
+  mode: deterministic
+  category: workspace_boundary
+  description: rejectsRelativeTraversalForExistingAndMissingReadTargets
+  test_selector: WorkspaceContextTest#rejectsRelativeTraversalForExistingAndMissingReadTargets
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.missingPathsInsideWorkspaceRemainValid
+  mode: deterministic
+  category: workspace_boundary
+  description: missingPathsInsideWorkspaceRemainValid
+  test_selector: WorkspaceContextTest#missingPathsInsideWorkspaceRemainValid
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.deniesExternalFileAndDirectoryLinksForReadsAndWrites
+  mode: deterministic
+  category: workspace_boundary
+  description: deniesExternalFileAndDirectoryLinksForReadsAndWrites
+  test_selector: WorkspaceContextTest#deniesExternalFileAndDirectoryLinksForReadsAndWrites
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.permitsLinksWhoseRealTargetsAreWithinWorkspace
+  mode: deterministic
+  category: workspace_boundary
+  description: permitsLinksWhoseRealTargetsAreWithinWorkspace
+  test_selector: WorkspaceContextTest#permitsLinksWhoseRealTargetsAreWithinWorkspace
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.resolvesDotDotAfterFollowingSymlinks
+  mode: deterministic
+  category: workspace_boundary
+  description: resolvesDotDotAfterFollowingSymlinks
+  test_selector: WorkspaceContextTest#resolvesDotDotAfterFollowingSymlinks
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.danglingAndCyclicLinksFailClosed
+  mode: deterministic
+  category: workspace_boundary
+  description: danglingAndCyclicLinksFailClosed
+  test_selector: WorkspaceContextTest#danglingAndCyclicLinksFailClosed
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.supportsMultipleRootsAndRuntimeGrants
+  mode: deterministic
+  category: workspace_boundary
+  description: supportsMultipleRootsAndRuntimeGrants
+  test_selector: WorkspaceContextTest#supportsMultipleRootsAndRuntimeGrants
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.supportsSymlinkWorkspaceRootAndPinsItsGrant
+  mode: deterministic
+  category: workspace_boundary
+  description: supportsSymlinkWorkspaceRootAndPinsItsGrant
+  test_selector: WorkspaceContextTest#supportsSymlinkWorkspaceRootAndPinsItsGrant
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.systemTempReadExceptionDoesNotGrantWritesOrRelativeEscapes
+  mode: deterministic
+  category: workspace_boundary
+  description: systemTempReadExceptionDoesNotGrantWritesOrRelativeEscapes
+  test_selector: WorkspaceContextTest#systemTempReadExceptionDoesNotGrantWritesOrRelativeEscapes
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.absoluteTempReadExceptionCannotFollowLinkToUnpermittedLocation
+  mode: deterministic
+  category: workspace_boundary
+  description: absoluteTempReadExceptionCannotFollowLinkToUnpermittedLocation
+  test_selector: WorkspaceContextTest#absoluteTempReadExceptionCannotFollowLinkToUnpermittedLocation
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: WorkspaceContextTest.rejectsFileAncestorsForNewPaths
+  mode: deterministic
+  category: workspace_boundary
+  description: rejectsFileAncestorsForNewPaths
+  test_selector: WorkspaceContextTest#rejectsFileAncestorsForNewPaths
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/WorkspaceContextTest.java
+- id: FileToolsBoundaryTest.readListAndSearchReturnBoundaryErrors
+  mode: deterministic
+  category: file_tools_boundary
+  description: readListAndSearchReturnBoundaryErrors
+  test_selector: FileToolsBoundaryTest#readListAndSearchReturnBoundaryErrors
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: FileToolsBoundaryTest.recursiveSearchSkipsExternalFileSymlinks
+  mode: deterministic
+  category: file_tools_boundary
+  description: recursiveSearchSkipsExternalFileSymlinks
+  test_selector: FileToolsBoundaryTest#recursiveSearchSkipsExternalFileSymlinks
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: FileToolsBoundaryTest.writesAndEditsRejectExternalLinksWithoutChangingTarget
+  mode: deterministic
+  category: file_tools_boundary
+  description: writesAndEditsRejectExternalLinksWithoutChangingTarget
+  test_selector: FileToolsBoundaryTest#writesAndEditsRejectExternalLinksWithoutChangingTarget
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: FileToolsBoundaryTest.writeRevalidatesParentAfterConfirmation
+  mode: deterministic
+  category: file_tools_boundary
+  description: writeRevalidatesParentAfterConfirmation
+  test_selector: FileToolsBoundaryTest#writeRevalidatesParentAfterConfirmation
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: FileToolsBoundaryTest.editRejectsTargetChangedToAnotherPermittedFileDuringConfirmation
+  mode: deterministic
+  category: file_tools_boundary
+  description: editRejectsTargetChangedToAnotherPermittedFileDuringConfirmation
+  test_selector: FileToolsBoundaryTest#editRejectsTargetChangedToAnotherPermittedFileDuringConfirmation
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: FileToolsBoundaryTest.permitsNormalCreateAndEditThroughInternalLink
+  mode: deterministic
+  category: file_tools_boundary
+  description: permitsNormalCreateAndEditThroughInternalLink
+  test_selector: FileToolsBoundaryTest#permitsNormalCreateAndEditThroughInternalLink
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/tools/FileToolsBoundaryTest.java
+- id: TerminalCliRendererApprovalTest.approvalSurvivesSameSessionRebuildButDoesNotLeakToAnotherSession
+  mode: deterministic
+  category: session_approvals
+  description: approvalSurvivesSameSessionRebuildButDoesNotLeakToAnotherSession
+  test_selector: TerminalCliRendererApprovalTest#approvalSurvivesSameSessionRebuildButDoesNotLeakToAnotherSession
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java
+- id: TerminalCliRendererApprovalTest.fileAndMcpApprovalsAreAlsoIndependentBetweenSessions
+  mode: deterministic
+  category: session_approvals
+  description: fileAndMcpApprovalsAreAlsoIndependentBetweenSessions
+  test_selector: TerminalCliRendererApprovalTest#fileAndMcpApprovalsAreAlsoIndependentBetweenSessions
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java
+- id: TerminalCliRendererApprovalTest.yesApprovesOneCallOnly
+  mode: deterministic
+  category: session_approvals
+  description: yesApprovesOneCallOnly
+  test_selector: TerminalCliRendererApprovalTest#yesApprovesOneCallOnly
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java
+- id: TerminalCliRendererApprovalTest.newRendererDoesNotInheritPreviousProcessApprovals
+  mode: deterministic
+  category: session_approvals
+  description: newRendererDoesNotInheritPreviousProcessApprovals
+  test_selector: TerminalCliRendererApprovalTest#newRendererDoesNotInheritPreviousProcessApprovals
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java
+- id: TerminalCliRendererApprovalTest.missingSessionOrToolKeyNeverRemembersApproval
+  mode: deterministic
+  category: session_approvals
+  description: missingSessionOrToolKeyNeverRemembersApproval
+  test_selector: TerminalCliRendererApprovalTest#missingSessionOrToolKeyNeverRemembersApproval
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java
+- id: TerminalCliRendererApprovalTest.menuConfirmationUsesSameSessionIsolation
+  mode: deterministic
+  category: session_approvals
+  description: menuConfirmationUsesSameSessionIsolation
+  test_selector: TerminalCliRendererApprovalTest#menuConfirmationUsesSameSessionIsolation
+  expected: JUnit assertions pass; record actual execution, never an LLM verdict.
+  source_file: src/test/java/org/salt/regnexe/cli/ui/TerminalCliRendererApprovalTest.java

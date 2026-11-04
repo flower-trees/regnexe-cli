@@ -55,5 +55,8 @@ AGENTS.md
 !.rex/marketplaces/
 .rex/marketplaces/*/cache/
 
-evals/*
-!evals/__pycache__/
+# Keep eval sources/datasets versioned; ignore environments, caches and run artifacts.
+evals/.venv/
+evals/__pycache__/
+evals/**/__pycache__/
+evals/results/
