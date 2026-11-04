@@ -791,6 +791,9 @@ public class CliMain implements CommandLineRunner {
     private RegnexeAgent buildAgent(SessionContext ctx, RexConfig config, Terminal terminal,
                                     CliRenderer renderer,
                                     RexDatabase db, Runnable pauseAction) {
+        // This factory is used at startup, on session switches and on plugin/MCP rebuilds.
+        // Use the stable UUID, not a display name or an agent instance, as the approval scope.
+        renderer.setApprovalSession(ctx.getSessionId());
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
         var builder = agentBuilder

@@ -41,11 +41,11 @@ public class TerminalCliRenderer implements CliRenderer {
     private final PrintWriter out;
     private final ThemeConfig theme;
     private boolean thinkingLineActive = false;
-    // Keys the user picked ALWAYS for — confirm() short-circuits to YES for these without
-    // prompting again. Lives for the process's lifetime (survives agent rebuilds within one
-    // REPL session, since this renderer instance is constructed once in CliMain.run()); never
-    // persisted to disk.
-    private final Set<String> alwaysAllowed = ConcurrentHashMap.newKeySet();
+    // Session UUID + tool key, retained across agent rebuilds but never shared across sessions
+    // or persisted to disk. A renderer without a selected session cannot remember approvals.
+    private record ApprovalKey(String sessionId, String toolKey) {}
+    private final Set<ApprovalKey> alwaysAllowed = ConcurrentHashMap.newKeySet();
+    private volatile String approvalSessionId;
 
     public TerminalCliRenderer(Terminal terminal, ThemeConfig theme) {
         this.terminal = terminal;
@@ -260,15 +260,27 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
+    public void setApprovalSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("Approval session ID must not be blank");
+        }
+        approvalSessionId = sessionId;
+    }
+
+    @Override
     public ConfirmChoice confirm(String verb, String rememberKey) {
-        if (rememberKey != null && alwaysAllowed.contains(rememberKey)) {
+        // Capture before asking so an in-flight response cannot grant a different session.
+        String sessionId = approvalSessionId;
+        ApprovalKey key = sessionId != null && rememberKey != null
+                ? new ApprovalKey(sessionId, rememberKey) : null;
+        if (key != null && alwaysAllowed.contains(key)) {
             return ConfirmChoice.YES;
         }
         ConfirmChoice choice = theme.theme() != CliTheme.CODEX
                 ? confirmLine(verb)
                 : confirmMenu(verb);
-        if (choice == ConfirmChoice.ALWAYS && rememberKey != null) {
-            alwaysAllowed.add(rememberKey);
+        if (choice == ConfirmChoice.ALWAYS && key != null) {
+            alwaysAllowed.add(key);
         }
         return choice;
     }
@@ -284,7 +296,7 @@ public class TerminalCliRenderer implements CliRenderer {
 
     private ConfirmChoice confirmMenuRaw(String verb) {
         ConfirmChoice[] choices = {ConfirmChoice.NO, ConfirmChoice.YES, ConfirmChoice.ALWAYS, ConfirmChoice.PAUSE};
-        String[] labels = {"no", "yes", "always", "pause"};
+        String[] labels = {"no", "yes", "always (this session)", "pause"};
         int selected = 0;
         out.println("│ " + verb + "?");
         renderChoices(labels, selected);
@@ -335,7 +347,7 @@ public class TerminalCliRenderer implements CliRenderer {
             }
             if (c == 'a') {
                 clearChoices(labels.length);
-                out.println("│ always");
+                out.println("│ always (this session)");
                 out.flush();
                 return ConfirmChoice.ALWAYS;
             }
@@ -414,7 +426,7 @@ public class TerminalCliRenderer implements CliRenderer {
 
     private ConfirmChoice confirmLine(String verb) {
         String label = Character.toUpperCase(verb.charAt(0)) + verb.substring(1);
-        out.print("  " + label + "? [y/N/pause/always] ");
+        out.print("  " + label + "? [y/N/pause/always (this session)] ");
         out.flush();
         // No trailing println() here — the terminal's own echo of the user's Enter keypress
         // already advances to a new line (confirmLine runs in cooked mode, unlike the arrow-key

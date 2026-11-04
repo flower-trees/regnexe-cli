@@ -20,11 +20,14 @@ public interface CliRenderer {
     void editPreview(String path, String oldString, String newString);
     /** Preview shown before an MCP tool-call confirmation: which server/tool and the arguments. */
     void mcpToolPreview(String server, String tool, Object args);
+    /** Selects the session UUID whose in-memory ALWAYS approvals apply to subsequent calls. */
+    void setApprovalSession(String sessionId);
     /**
      * Asks the user to confirm an action described by {@code verb} (e.g. "run", "apply").
      * {@code rememberKey} identifies what an ALWAYS answer applies to (e.g. a tool name) — once
-     * the user picks ALWAYS for a given key, later calls with the same key skip the prompt and
-     * return YES directly, for the rest of this process (not persisted to disk).
+     * the user picks ALWAYS for a given key, later calls in the same session skip the prompt
+     * and return YES directly. Other sessions have independent approvals. Returning to a
+     * session restores its approvals within this process; nothing is persisted to disk.
      */
     ConfirmChoice confirm(String verb, String rememberKey);
     void tokenSummary(String json);

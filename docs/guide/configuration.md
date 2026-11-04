@@ -62,6 +62,14 @@ model:
 
 `workspace.dirs` lists roots and defaults to the current directory; `/add-dir` extends them at runtime. `skills.extra_dirs` adds plugin roots with tilde expansion. Standalone skills live in project `.rex/skills` or user `~/.rex/skills`. MCP configurations live in project/user `.rex/mcp.json`, and plugins can carry their own. Use `/help` for plugin and MCP commands and user/project scope options.
 
+## 确认授权的作用域 / Approval scope
+
+工具确认中的 `yes` 只批准当前调用；`always (this session)` 为当前会话记住该工具的批准记录。以会话 UUID 隔离，不会因 `/resume` 切换到其他会话而共享；同一 rex 进程内切回原会话会恢复该会话的批准记录，插件/MCP 重建 Agent 也不会清空。批准记录只在内存中保存，退出或重启 rex 后失效。
+
+当前授权粒度仍是工具：例如当前会话对 `bash` 选择 `always` 后，该会话后续需要确认的 Shell 命令免确认；文件工具按各自工具名、MCP 按工具标识分别记忆。命令拦截和工作目录检查仍然执行。该选项不提供操作系统隔离，Shell 自动放行规则仍需后续单独收紧。
+
+`yes` approves one call. `always (this session)` remembers approval for that tool under the current session UUID. Other sessions have independent approvals; switching back restores that session's approvals within the same rex process, including across agent rebuilds. Approvals are memory-only and expire when rex exits. The scope is still per tool, so approving `bash` this way skips later Shell confirmations in that session; command blocking and workspace checks still run.
+
 ## Opik（可选 / Optional）
 
 ```yaml
