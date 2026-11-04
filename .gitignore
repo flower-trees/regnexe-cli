@@ -54,3 +54,6 @@ AGENTS.md
 !.rex/skills/
 !.rex/marketplaces/
 .rex/marketplaces/*/cache/
+
+evals/*
+!evals/__pycache__/
