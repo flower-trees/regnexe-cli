@@ -3,6 +3,8 @@
 > 来源：regnexe-cli 用自身工具链实现 Step 8 Session 管理时暴露的问题
 > 日期：2026-07-07
 
+> 阅读说明：本文是历史诊断与提案，不是当前待办清单。部分问题已有后续修复，coordinator/sub-task 提案曾决定不实施，参见[后续开发日志](../log/2026-07-10-session-and-plan-perf.md)。继续开发前应核对当前代码与依赖版本，最新方向见[开发规划](../plan/01-project-analysis-and-roadmap.md)。
+
 ---
 
 ## 一、isReadOnly() 误判导致 `2>/dev/null` 触发确认

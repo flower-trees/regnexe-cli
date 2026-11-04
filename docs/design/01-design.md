@@ -1,6 +1,8 @@
 # regnexe-cli 设计文档
 
 > 基于 regnexe-agent 框架构建的 Claude Code 风格 CLI 工具
+>
+> 阅读说明：本文保留初始设计与实施步骤，部分命令、依赖和目录已演进。当前用法见[配置说明](../guide/configuration.md)，后续方向见[开发规划](../plan/01-project-analysis-and-roadmap.md)。
 
 ---
 

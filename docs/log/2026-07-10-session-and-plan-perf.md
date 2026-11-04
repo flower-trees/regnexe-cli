@@ -28,7 +28,7 @@ cd ../regnexe-cli && mvn -q -o compile
 1. **补完设计文档 Step 8（Session 管理）**，随后顺带把 Step 9（多目录）、Step 10（Pause/Resume）也在同一批工作里做掉了（commit 历史证实，不是本 log 单独驱动的，但状态一并记录在这里方便查）。
 2. **分析并优化 Plan/Reflect 阶段的性能与可靠性**——起因是用 `regnexe-cli` 自举开发时，Step 8 这种"改 4 个文件、建 1 个新文件"的任务在 `max_agent_iterations=20` 下容易失败，順藤摸瓜发现了一串问题：plan parse 无 fallback、reflect 幻觉 FINISH、LLM HTTP 调用超时后任务不可恢复、Plan 阶段冗余 token 太多。逐条修完。
 
-设计文档 `docs/design/agent-improvement.md` 记录了问题的原始诊断（六号"任务分解"提案），最终结论是**不做 coordinator/sub-task 那套重架构**，因为框架本身的"轮次（round）"机制已经天然提供了分解能力（每轮 `CapabilityExecutor` 都是全新的 LLM 会话，不共享上一轮的工具调用历史），真正的问题是 plan/reflect 的健壮性和 prompt 冗余，不是缺一层任务调度。
+设计文档 `docs/design/02-agent-improvement.md` 记录了问题的原始诊断（六号"任务分解"提案），最终结论是**不做 coordinator/sub-task 那套重架构**，因为框架本身的"轮次（round）"机制已经天然提供了分解能力（每轮 `CapabilityExecutor` 都是全新的 LLM 会话，不共享上一轮的工具调用历史），真正的问题是 plan/reflect 的健壮性和 prompt 冗余，不是缺一层任务调度。
 
 ## 2. 主要开发内容
 
@@ -38,7 +38,7 @@ cd ../regnexe-cli && mvn -q -o compile
 - `d8a9b6e` Feature (cli): Add session management and workspace support functionality
 - `3d6e0df` Feature (cli): Add pause and resume functionality and workspace directory management
 
-实现内容（与 `docs/design/design.md` Step 8/9/10 对照）：
+实现内容（与 `docs/design/01-design.md` Step 8/9/10 对照）：
 
 | Step | 设计文档要求 | 实际实现 | 状态 |
 |---|---|---|---|
@@ -116,13 +116,13 @@ cd ../regnexe-cli && mvn -q -o compile
 - **本 session 里 2.3 节的改动没有做过真实的端到端 smoke test**（没有实际跑一个多文件任务观察 Plan 延迟是否真的降低、json_object 模式是否真的减少了 parse 失败率）。建议下一步找一个类似"改 3-4 个文件"的真实任务跑一遍，对比修改前后的 Plan 阶段耗时和 retry 次数。
 - **`ModelSpec.modelKwargs` 链路仍然是断的**：`DefaultModelProvider.byVendor()/byPrefix()` 构建 `BaseChatModel` 时完全没有把 `spec.getModelKwargs()` 传给 builder。目前没有任何代码依赖这条路径（`withJsonMode()` 是另开的独立机制，没有用 kwargs），但如果以后想通过 `ModelSpec` 传 `temperature`/其他 vendor 专属参数（比如 `ModelSpec` 类注释里提到的 `"thinking":"enabled"`），这里要补上。
 - **Reflector 精简后是否会影响某些边缘场景的判断质量没有验证**——理论上 `evaluateGuardRules()` 不受影响，但 LLM 自主判断部分（不是硬编码规则那部分）失去了 narrative 上下文，如果发现 Reflector 误判变多，第一个该看的就是这次改动。
-- **`docs/design/agent-improvement.md` 六号"任务分解"提案的结论是不做**，理由记录在该文档和本 session 的讨论历史里；如果未来又出现"复杂任务在轮次预算内做不完"的情况，先确认是不是 Planner 把所有工作都规划进了一个巨型 `iterationsHint` 单轮（该被拆成多轮），而不是重新捡起 coordinator/sub-task 那套方案。
+- **`docs/design/02-agent-improvement.md` 六号"任务分解"提案的结论是不做**，理由记录在该文档和本 session 的讨论历史里；如果未来又出现"复杂任务在轮次预算内做不完"的情况，先确认是不是 Planner 把所有工作都规划进了一个巨型 `iterationsHint` 单轮（该被拆成多轮），而不是重新捡起 coordinator/sub-task 那套方案。
 
 ## 5. 未来开发计划
 
 按优先级：
 
-1. ~~**Step 11：打包与安装脚本**（`docs/design/design.md` 最后一步，完全没开始）——`pom.xml` 加 `spring-boot-maven-plugin` repackage、写 `install.sh`、`rex` wrapper 脚本。设计文档里有验证步骤可以直接抄。~~ 已完成，见第 6 节。
+1. ~~**Step 11：打包与安装脚本**（`docs/design/01-design.md` 最后一步，完全没开始）——`pom.xml` 加 `spring-boot-maven-plugin` repackage、写 `install.sh`、`rex` wrapper 脚本。设计文档里有验证步骤可以直接抄。~~ 已完成，见第 6 节。
 2. **验证 2.3 节的优化效果**（见"已知问题"第一条）——找真实任务跑一遍，量化 Plan 阶段延迟变化。
 3. **`ModelSpec.modelKwargs` 断链问题**——如果要支持切换 Plan/Reflect 用更小更快的模型（本 session 讨论过、评估为"值得做但成本较高"的优化项），需要先把这条链路接上：`DefaultModelProvider` 把 kwargs 传给 vendor builder，各 vendor 的 `otherInformation()` 消费它。
 4. **给 Plan/Reflect 配独立（更快/更便宜）模型**——`RegnexeAgentBuilder` 目前只有一个全局 `defaultModel`，Search/Plan/Execute/Reflect 四个角色共用。这是讨论过但判定为"比前几项成本高一档"、故意没做的优化，需要给 `ContextBusKeys` 加类似 `PLANNER_MODEL` 的 override 通道。
@@ -130,7 +130,7 @@ cd ../regnexe-cli && mvn -q -o compile
 
 ## 6. Step 11 追加记录：打包与安装脚本
 
-继续开发时已补完 `docs/design/design.md` Step 11：
+继续开发时已补完 `docs/design/01-design.md` Step 11：
 
 - `pom.xml`：设置 `<finalName>regnexe-cli</finalName>`，并把 `spring-boot-maven-plugin` 的 `repackage` goal 绑定到 package 生命周期，产物固定为 `target/regnexe-cli.jar`。
 - `install.sh`：新增安装脚本，默认把 JAR 安装到 `/opt/regnexe/regnexe-cli.jar`，把 wrapper 写到 `/usr/local/bin/rex`；支持 `SOURCE_JAR`、`INSTALL_DIR`、`BIN_DIR`、`BIN_NAME` 环境变量覆盖，方便无 sudo smoke test。
@@ -149,4 +149,4 @@ scripts/smoke-test.sh
 
 - 改 `regnexe-agent` 或 `j-langchain` 之后，**一定要按第 0 节的顺序 `mvn install`**，否则 `regnexe-cli` 用的是本地仓库缓存的旧版本，改了等于没改，还会误判"这个 bug 还在"。
 - 三个仓库目前都在 `master` 分支直接提交，没有走 PR review 流程；改动前后建议自己跑一下 `mvn -q -o compile`（三个仓库都要过）。
-- 这份日志覆盖的是"性能与可靠性"这条线，不是功能新增；如果要继续做 Step 11 或新功能，起点应该是 `docs/design/design.md`，不是这份日志。
+- 这份日志覆盖的是"性能与可靠性"这条线，不是功能新增；如果要继续做 Step 11 或新功能，起点应该是 `docs/design/01-design.md`，不是这份日志。

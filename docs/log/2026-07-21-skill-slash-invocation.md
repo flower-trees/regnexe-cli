@@ -2,7 +2,7 @@
 
 - 日期：2026-07-21
 - 涉及仓库：`j-langchain`（`../j-langchain`）→ `regnexe-agent`（`../regnexe-agent`）→ `regnexe-cli`（本仓库），依赖方向从左到右，改动也应按此顺序 `mvn install`
-- 设计文档：`docs/design/skill-slash-invocation.md`（本仓库）——本 log 是该设计的落地实现记录，包含设计阶段没预料到的几个真实 bug
+- 设计文档：`docs/design/03-skill-slash-invocation.md`（本仓库）——本 log 是该设计的落地实现记录，包含设计阶段没预料到的几个真实 bug
 - 面向读者：下一个接手这部分代码的人或 AI；目的是让你不用重新看完整个对话就知道"改了什么、为什么改、顺序是什么"
 
 ## 0. 一句话概括
@@ -138,7 +138,7 @@
 
 ### 4.4 regnexe-cli 新增/改动文件清单
 
-- 新建文档：`docs/design/skill-slash-invocation.md`（设计文档，含五个 bug 后续追加的修订记录）
+- 新建文档：`docs/design/03-skill-slash-invocation.md`（设计文档，含五个 bug 后续追加的修订记录）
 - 改动：`CliMain.java`、`config/RexConfig.java`（新增 `SkillsConfig.extraDirs`）、`.gitignore`
 
 ---

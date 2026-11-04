@@ -72,6 +72,6 @@ opik:
   max_text_chars: 20000
 ```
 
-默认关闭。开启后会向配置服务发送提示词、工具参数和结果（可能包含代码或文件内容）。云端部署可配置 `api_key` 和 `workspace`。协议和已知限制见 [Opik 设计说明](../design/opik-tracing.md)。
+默认关闭。开启后会向配置服务发送提示词、工具参数和结果（可能包含代码或文件内容）。云端部署可配置 `api_key` 和 `workspace`。协议和已知限制见 [Opik 设计说明](../design/06-opik-tracing.md)。
 
-Disabled by default. Enabling it sends prompts, tool arguments, and output, potentially including code and file contents, to the configured service. Hosted deployments can set `api_key` and `workspace`. See the [Opik design and limitations](../design/opik-tracing.md).
+Disabled by default. Enabling it sends prompts, tool arguments, and output, potentially including code and file contents, to the configured service. Hosted deployments can set `api_key` and `workspace`. See the [Opik design and limitations](../design/06-opik-tracing.md).
