@@ -86,13 +86,17 @@ j-langchain
 
 ### 4.1 Shell 超时与取消
 
-当前 [BashTool](../../src/main/java/org/salt/regnexe/cli/tools/BashTool.java) 先阻塞读取输出直至 EOF，再执行带 30 秒超时的 `waitFor()`。命令持续运行或持有输出管道时，读取可能一直阻塞，超时逻辑无法及时到达。
+> 进展（2026-11-04）：本节描述的是分析时的旧实现。已完成异步输出读取、统一截止时间、暂停信号接入、中断标志恢复及已发现子进程清理，新增 8 项回归测试；实现与限制见[当天开发日志](../log/2026-11/2026-11-04.md)。后台命令与进程组隔离仍待后续设计。
+
+分析时的 [BashTool](../../src/main/java/org/salt/regnexe/cli/tools/BashTool.java) 先阻塞读取输出直至 EOF，再执行带 30 秒超时的 `waitFor()`。命令持续运行或持有输出管道时，读取可能一直阻塞，超时逻辑无法及时到达。
 
 建议异步读取输出，从启动时计算执行截止时间；超时或取消后终止进程及子进程，并保留部分输出。后续再扩展后台命令、轮询和长任务会话。
 
 ### 4.2 文件路径边界
 
-[WorkspaceContext.resolveForRead()](../../src/main/java/org/salt/regnexe/cli/tools/WorkspaceContext.java) 在相对路径查找失败后，直接回退到 `primaryRoot().resolve(candidate).normalize()`，没有重新验证根目录边界，包含 `../` 的路径可能越界。
+> 进展（2026-11-04）：已统一读写真实路径校验、修复相对路径回退、校验新文件最近存在的父目录，并补充递归搜索与确认后写入的校验；新增 17 项回归测试。实现与剩余竞态限制见[当天开发日志第 4 节](../log/2026-11/2026-11-04.md#4-修复工作目录真实路径边界)。
+
+分析时的 [WorkspaceContext.resolveForRead()](../../src/main/java/org/salt/regnexe/cli/tools/WorkspaceContext.java) 在相对路径查找失败后，直接回退到 `primaryRoot().resolve(candidate).normalize()`，没有重新验证根目录边界，包含 `../` 的路径可能越界。
 
 读写路径主要通过 `normalize()` 和 `startsWith()` 做词法检查，尚未完整处理符号链接指向根目录外的情况。应统一路径策略，检查真实路径；创建文件时检查最近存在的父目录，并考虑检查与实际操作间的竞态。
 

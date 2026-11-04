@@ -119,6 +119,7 @@ public class CliMain implements CommandLineRunner {
     private final EnabledStateLoader enabledStateLoader = new EnabledStateLoader();
     private final EnabledStateWriter enabledStateWriter = new EnabledStateWriter();
     private final ScopeResolver scopeResolver = new ScopeResolver();
+    private final AtomicBoolean taskPauseRequested = new AtomicBoolean(false);
 
     // The MCP client currently backing the running agent's MCP-sourced tools — both directly
     // configured (.rex/mcp.json) and Plugin-carried (<plugin-dir>/mcp.json) servers connect
@@ -349,6 +350,7 @@ public class CliMain implements CommandLineRunner {
         AtomicInteger interruptCount = new AtomicInteger(0);
         Thread mainThread = Thread.currentThread();
         Runnable pauseAction = () -> {
+            taskPauseRequested.set(true);
             RegnexeAgent a = agentRef.get();
             if (a != null) a.pause();
         };
@@ -486,6 +488,7 @@ public class CliMain implements CommandLineRunner {
             t.setDaemon(true);
             return t;
         });
+        taskPauseRequested.set(false);
         executing.set(true);
         interruptCount.set(0);
         Future<AgentResult> future = executor.submit(task);
@@ -810,7 +813,8 @@ public class CliMain implements CommandLineRunner {
                         FileTools.searchFiles(workspace),
                         FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()),
                         FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()),
-                        BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
+                        BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction,
+                                taskPauseRequested::get)
                 );
 
         // Optional per-role model overrides — same vendor as the main model unless

@@ -6,13 +6,11 @@ import org.salt.regnexe.cli.config.RexConfig;
 import org.salt.regnexe.cli.ui.ConfirmChoice;
 import org.salt.regnexe.cli.ui.CliRenderer;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -121,6 +119,15 @@ public class BashTool {
                             Terminal terminal,
                             CliRenderer renderer,
                             Runnable pauseAction) {
+        return bash(workspace, config, terminal, renderer, pauseAction, () -> false);
+    }
+
+    public static Tool bash(WorkspaceContext workspace,
+                            RexConfig.ToolsConfig.BashConfig config,
+                            Terminal terminal,
+                            CliRenderer renderer,
+                            Runnable pauseAction,
+                            BooleanSupplier cancellationRequested) {
         return Tool.builder()
                 .name("bash")
                 .description(
@@ -175,61 +182,8 @@ public class BashTool {
                         out.flush();
                     }
 
-                    try {
-                        ProcessBuilder pb = new ProcessBuilder("/bin/sh", "-c", command);
-                        pb.directory(workspace.primaryRoot().toFile());
-                        pb.redirectErrorStream(true);
-                        Process proc = pb.start();
-
-                        StringBuilder output = new StringBuilder();
-                        boolean atCaptureCeiling = false;
-
-                        try (InputStream is = proc.getInputStream()) {
-                            byte[] buf = new byte[4096];
-                            int read;
-                            while ((read = is.read(buf)) != -1) {
-                                if (!atCaptureCeiling) {
-                                    String chunk = new String(buf, 0, read, StandardCharsets.UTF_8);
-                                    if (output.length() + chunk.length() <= MAX_CAPTURE_CHARS) {
-                                        output.append(chunk);
-                                    } else {
-                                        int space = MAX_CAPTURE_CHARS - output.length();
-                                        if (space > 0) output.append(chunk, 0, space);
-                                        atCaptureCeiling = true;
-                                    }
-                                }
-                                // keep draining even past the ceiling so the process doesn't block
-                            }
-                        }
-
-                        boolean finished = proc.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                        if (!finished) {
-                            proc.destroyForcibly();
-                            String partial = output.isEmpty() ? "" : "\nOutput so far:\n" + output;
-                            return "Error: timed out after " + TIMEOUT_SECONDS + "s" + partial;
-                        }
-
-                        int exit = proc.exitValue();
-                        String outputText = output.toString();
-                        // Beyond MAX_INLINE_CHARS: preview + tmp-file pointer instead of losing the
-                        // rest (see ToolOutputOverflow). atCaptureCeiling means even the saved copy
-                        // was cut at MAX_CAPTURE_CHARS — the true output was larger still.
-                        String shown = ToolOutputOverflow.capOrOffload(outputText, "bash");
-                        StringBuilder result = new StringBuilder();
-                        result.append("Exit: ").append(exit).append("\n");
-                        if (!shown.isEmpty()) {
-                            result.append("─".repeat(40)).append("\n");
-                            result.append(shown);
-                        }
-                        if (atCaptureCeiling) {
-                            result.append("\n[... command produced more than ").append(MAX_CAPTURE_CHARS)
-                                  .append(" chars; even the saved copy was cut off there ...]");
-                        }
-                        return result.toString();
-
-                    } catch (IOException | InterruptedException e) {
-                        return "Error: " + e.getMessage();
-                    }
+                    return ShellCommandExecutor.execute(command, workspace.primaryRoot(),
+                            Duration.ofSeconds(TIMEOUT_SECONDS), MAX_CAPTURE_CHARS, cancellationRequested);
                 })
                 .build();
     }

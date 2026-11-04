@@ -8,10 +8,13 @@ import org.salt.regnexe.cli.ui.ConfirmChoice;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 /**
  * File-system tools for the agent.
@@ -63,7 +66,12 @@ public class FileTools {
                     if (startLine < 1) startLine = 1;
                     if (maxLines  < 1) maxLines  = DEFAULT_READ_LINES;
 
-                    Path file = ctx.resolveForRead(pathStr);
+                    Path file;
+                    try {
+                        file = ctx.resolveForRead(pathStr);
+                    } catch (SecurityException e) {
+                        return "Error: " + e.getMessage();
+                    }
                     if (!Files.exists(file)) return "Error: file not found: " + pathStr;
                     if (Files.isDirectory(file)) return "Error: path is a directory, use list_files instead";
                     try {
@@ -118,7 +126,12 @@ public class FileTools {
                 .func(raw -> {
                     Map<String, Object> args = toMap(raw);
                     String pathStr = str(args, "path");
-                    Path dir = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
+                    Path dir;
+                    try {
+                        dir = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
+                    } catch (SecurityException e) {
+                        return "Error: " + e.getMessage();
+                    }
                     if (!Files.exists(dir)) return "Error: path not found: " + pathStr;
                     if (!Files.isDirectory(dir)) return "Error: not a directory, use read_file instead";
                     try {
@@ -126,7 +139,10 @@ public class FileTools {
                         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
                             for (Path entry : stream) {
                                 String name = entry.getFileName().toString();
-                                if (Files.isDirectory(entry)) {
+                                if (Files.isSymbolicLink(entry)) {
+                                    // Display the entry without following an unvalidated target.
+                                    entries.add("  " + name + "@");
+                                } else if (Files.isDirectory(entry, LinkOption.NOFOLLOW_LINKS)) {
                                     entries.add("  " + name + "/");
                                 } else {
                                     long size = Files.size(entry);
@@ -165,19 +181,25 @@ public class FileTools {
                     String pattern = str(args, "pattern");
                     String pathStr = str(args, "path");
                     if (pattern.isBlank()) return "Error: pattern is required";
-                    Path searchRoot = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
+                    Path searchRoot;
+                    try {
+                        searchRoot = ctx.resolveForRead(pathStr.isBlank() ? "." : pathStr);
+                    } catch (SecurityException e) {
+                        return "Error: " + e.getMessage();
+                    }
                     if (!Files.exists(searchRoot)) return "Error: path not found: " + pathStr;
 
                     String lowerPattern = pattern.toLowerCase();
                     List<String> hits = new ArrayList<>();
-                    try {
-                        Files.walk(searchRoot)
+                    try (Stream<Path> paths = Files.walk(searchRoot)) {
+                        paths
                                 .filter(Files::isRegularFile)
                                 .filter(p -> isBinaryUnlikely(p))
                                 .forEach(file -> {
                                     if (hits.size() >= MAX_SEARCH_HITS) return;
                                     try {
-                                        List<String> lines = Files.readAllLines(file);
+                                        Path checked = ctx.resolveForRead(file.toString());
+                                        List<String> lines = Files.readAllLines(checked);
                                         for (int i = 0; i < lines.size(); i++) {
                                             if (hits.size() >= MAX_SEARCH_HITS) break;
                                             if (lines.get(i).toLowerCase().contains(lowerPattern)) {
@@ -235,11 +257,15 @@ public class FileTools {
                         }
                     }
                     try {
+                        file = revalidateWriteTarget(ctx, pathStr, file);
                         Files.createDirectories(file.getParent());
-                        Files.writeString(file, content);
+                        file = revalidateWriteTarget(ctx, pathStr, file);
+                        Files.writeString(file, content, StandardOpenOption.CREATE,
+                                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE,
+                                LinkOption.NOFOLLOW_LINKS);
                         int lineCount = content.split("\n", -1).length;
                         return "Written: " + ctx.displayPath(file) + " (" + lineCount + " lines)";
-                    } catch (IOException e) {
+                    } catch (IOException | SecurityException e) {
                         return "Error writing file: " + e.getMessage();
                     }
                 })
@@ -295,13 +321,24 @@ public class FileTools {
                         }
                     }
                     try {
-                        Files.writeString(file, updated);
+                        file = revalidateWriteTarget(ctx, pathStr, file);
+                        Files.writeString(file, updated, StandardOpenOption.TRUNCATE_EXISTING,
+                                StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
                         return "Applied edit to " + ctx.displayPath(file);
-                    } catch (IOException e) {
+                    } catch (IOException | SecurityException e) {
                         return "Error writing file: " + e.getMessage();
                     }
                 })
                 .build();
+    }
+
+    /** Confirmation can take arbitrarily long; never silently switch the approved target. */
+    private static Path revalidateWriteTarget(WorkspaceContext ctx, String requested, Path expected) {
+        Path checked = ctx.resolve(requested);
+        if (!checked.equals(expected)) {
+            throw new SecurityException("File target changed since preview: " + requested);
+        }
+        return checked;
     }
 
     @SuppressWarnings("unchecked")
