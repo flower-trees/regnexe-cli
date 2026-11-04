@@ -777,7 +777,8 @@ public class CliMain implements CommandLineRunner {
                 : new OpikEventListener.ModelRef(config.effectiveReflectorVendor(), mc.getReflectorName());
         // ctx is read per task, not captured by value: /resume switches its session id in place.
         return new OpikEventListener(
-                opikExporter, ctx::getSessionId, opik.getMaxTextChars(), main, planner, reflector);
+                opikExporter, ctx::getSessionId, ctx::getSessionName, opik.getMaxTextChars(),
+                main, planner, reflector);
     }
 
     private static boolean isBlank(String s) {
@@ -807,8 +808,8 @@ public class CliMain implements CommandLineRunner {
                         FileTools.readFile(workspace),
                         FileTools.listFiles(workspace),
                         FileTools.searchFiles(workspace),
-                        FileTools.writeFile(workspace, renderer, pauseAction),
-                        FileTools.editFile(workspace, renderer, pauseAction),
+                        FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()),
+                        FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()),
                         BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction)
                 );
 

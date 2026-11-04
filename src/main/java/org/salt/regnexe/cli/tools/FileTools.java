@@ -1,6 +1,7 @@
 package org.salt.regnexe.cli.tools;
 
 import org.salt.jlangchain.rag.tools.Tool;
+import org.salt.regnexe.cli.config.RexConfig;
 import org.salt.regnexe.cli.ui.CliRenderer;
 import org.salt.regnexe.cli.ui.ConfirmChoice;
 
@@ -200,7 +201,8 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool writeFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction) {
+    public static Tool writeFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction,
+                                  RexConfig.ToolsConfig.FsConfig config) {
         return Tool.builder()
                 .name("write_file")
                 .description(
@@ -222,13 +224,15 @@ public class FileTools {
                     }
                     boolean exists = Files.exists(file);
                     renderer.filePreview(ctx.displayPath(file), content, !exists);
-                    ConfirmChoice choice = renderer.confirm("apply", "write_file");
-                    if (choice == ConfirmChoice.PAUSE) {
-                        if (pauseAction != null) pauseAction.run();
-                        return "Task paused by user.";
-                    }
-                    if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
-                        return "Write cancelled by user.";
+                    if (config.isRequireConfirmation()) {
+                        ConfirmChoice choice = renderer.confirm("apply", "write_file");
+                        if (choice == ConfirmChoice.PAUSE) {
+                            if (pauseAction != null) pauseAction.run();
+                            return "Task paused by user.";
+                        }
+                        if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
+                            return "Write cancelled by user.";
+                        }
                     }
                     try {
                         Files.createDirectories(file.getParent());
@@ -242,7 +246,8 @@ public class FileTools {
                 .build();
     }
 
-    public static Tool editFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction) {
+    public static Tool editFile(WorkspaceContext ctx, CliRenderer renderer, Runnable pauseAction,
+                                 RexConfig.ToolsConfig.FsConfig config) {
         return Tool.builder()
                 .name("edit_file")
                 .description(
@@ -279,13 +284,15 @@ public class FileTools {
                     }
                     String updated = current.substring(0, idx) + newString + current.substring(idx + oldString.length());
                     renderer.editPreview(ctx.displayPath(file), oldString, newString);
-                    ConfirmChoice choice = renderer.confirm("apply", "edit_file");
-                    if (choice == ConfirmChoice.PAUSE) {
-                        if (pauseAction != null) pauseAction.run();
-                        return "Task paused by user.";
-                    }
-                    if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
-                        return "Edit cancelled by user.";
+                    if (config.isRequireConfirmation()) {
+                        ConfirmChoice choice = renderer.confirm("apply", "edit_file");
+                        if (choice == ConfirmChoice.PAUSE) {
+                            if (pauseAction != null) pauseAction.run();
+                            return "Task paused by user.";
+                        }
+                        if (choice != ConfirmChoice.YES && choice != ConfirmChoice.ALWAYS) {
+                            return "Edit cancelled by user.";
+                        }
                     }
                     try {
                         Files.writeString(file, updated);

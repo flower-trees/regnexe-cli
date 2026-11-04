@@ -160,6 +160,7 @@ public class RexConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ToolsConfig {
         private BashConfig bash = new BashConfig();
+        private FsConfig fs = new FsConfig();
 
         @Data
         @JsonIgnoreProperties(ignoreUnknown = true)
@@ -167,23 +168,42 @@ public class RexConfig {
             private boolean requireConfirmation = true;
             private List<String> extraBlocked = new ArrayList<>();
         }
+
+        @Data
+        @JsonIgnoreProperties(ignoreUnknown = true)
+        public static class FsConfig {
+            /** Gates the write_file/edit_file confirmation prompt, same as bash.require_confirmation
+             * gates bash's. Off by default (true) — set false only for non-interactive use (e.g. the
+             * eval harness under evals/, via its own config pointed at by REX_CONFIG) where there is
+             * no human to answer the prompt and an unanswered confirmation would otherwise always
+             * resolve to "cancelled". */
+            private boolean requireConfirmation = true;
+        }
     }
 
     // ── Static factory ──────────────────────────────────────────────────────
 
-    private static final Path CONFIG_PATH =
+    private static final Path DEFAULT_CONFIG_PATH =
             Path.of(System.getProperty("user.home"), ".rex", "config.yml");
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
+    /** REX_CONFIG overrides the config file path — lets a non-interactive caller (the eval
+     * harness under evals/) point at its own config without touching ~/.rex/config.yml. */
+    private static Path configPath() {
+        String override = System.getenv("REX_CONFIG");
+        return (override != null && !override.isBlank()) ? Path.of(override) : DEFAULT_CONFIG_PATH;
+    }
+
     public static RexConfig load() {
-        if (!Files.exists(CONFIG_PATH)) {
+        Path path = configPath();
+        if (!Files.exists(path)) {
             return new RexConfig();
         }
         try {
-            String raw = Files.readString(CONFIG_PATH);
+            String raw = Files.readString(path);
             String resolved = resolveEnvVars(raw);
             Yaml yaml = new Yaml();
             Map<?, ?> map = yaml.load(resolved);
@@ -191,7 +211,7 @@ public class RexConfig {
             RexConfig cfg = MAPPER.convertValue(map, RexConfig.class);
             return cfg != null ? cfg : new RexConfig();
         } catch (IOException e) {
-            System.err.println("[warn] Failed to load " + CONFIG_PATH + ": " + e.getMessage());
+            System.err.println("[warn] Failed to load " + path + ": " + e.getMessage());
             return new RexConfig();
         }
     }

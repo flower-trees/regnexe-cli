@@ -12,7 +12,7 @@
 opik:
   enabled: true
   # 以下都有默认值，本地自部署的 Opik 不需要改
-  endpoint: http://localhost:5173/api/v1/private/otel
+  endpoint: http://localhost:28173/api/v1/private/otel
   project: regnexe-cli
   max_text_chars: 20000     # prompt / 工具输出超过这个长度会被截断
   # api_key: ${OPIK_API_KEY}   # 仅 Comet 云端需要
