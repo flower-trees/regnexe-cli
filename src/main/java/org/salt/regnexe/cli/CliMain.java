@@ -46,6 +46,8 @@ import org.salt.regnexe.cli.event.CliEventListener;
 import org.salt.regnexe.cli.event.OpikEventListener;
 import org.salt.regnexe.cli.observe.OtlpSpanExporter;
 import org.salt.regnexe.cli.session.SessionContext;
+import org.salt.regnexe.cli.session.SessionExecutionLock;
+import org.salt.regnexe.cli.session.PendingResume;
 import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
 import org.salt.regnexe.cli.tools.FileTools;
@@ -381,11 +383,9 @@ public class CliMain implements CommandLineRunner {
         renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
         if (dbWarning != null) renderer.warning(dbWarning);
 
-        // Set by /resume when it finds an unfinished task; consumed by the very next non-slash
-        // input, which becomes that task's supplement instruction via agent.resume(...) instead
-        // of starting a fresh agent.execute(...) call. Survives other slash commands in between
-        // (they leave it untouched — see SlashResult.pendingResume's javadoc).
-        boolean pendingResume = false;
+        // Bind the task revision previewed by /resume. A later /resume replaces this selection;
+        // other slash commands leave it intact. Validate it under the worker's session lock.
+        PendingResume pendingResume = null;
 
         while (!exitRequested.get()) {
             String input;
@@ -416,7 +416,7 @@ public class CliMain implements CommandLineRunner {
                     try {
                         AgentResult skillResult = runAgentTask(
                                 () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
-                                ctx, out, executing, interruptCount);
+                                ctx, out, executing, interruptCount, db);
                         handleAgentResult(skillResult, ctx, out, renderer, db);
                         if (db != null) {
                             try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
@@ -429,7 +429,7 @@ public class CliMain implements CommandLineRunner {
                         out.flush();
                     }
                 }
-                if (result.pendingResume != null) {
+                if (result.resumeSelectionChanged) {
                     pendingResume = result.pendingResume;
                 }
                 continue;
@@ -438,15 +438,20 @@ public class CliMain implements CommandLineRunner {
             try {
                 RegnexeAgent taskAgent = agent;
                 AgentResult result;
-                if (pendingResume) {
+                if (pendingResume != null) {
+                    PendingResume selected = pendingResume;
+                    pendingResume = null;
                     String supplement = input;
                     result = runAgentTask(
-                            () -> taskAgent.resume(ctx.getSessionName(), supplement),
+                            () -> {
+                                selected.checkSession(ctx.getSessionId());
+                                return taskAgent.resumeTask(ctx.getSessionName(), selected.taskId(),
+                                        selected.expectedVersion(), supplement);
+                            },
                             ctx,
                             out,
                             executing,
-                            interruptCount);
-                    pendingResume = false;
+                            interruptCount, db);
                 } else {
                     TaskRequest req = new TaskRequest();
                     req.setGoal(injectWorkspacePreamble(input, ctx));
@@ -456,7 +461,7 @@ public class CliMain implements CommandLineRunner {
                             ctx,
                             out,
                             executing,
-                            interruptCount);
+                            interruptCount, db);
                 }
                 handleAgentResult(result, ctx, out, renderer, db);
                 if (db != null) {
@@ -482,7 +487,7 @@ public class CliMain implements CommandLineRunner {
                                      SessionContext ctx,
                                      PrintWriter out,
                                      AtomicBoolean executing,
-                                     AtomicInteger interruptCount) throws Exception {
+                                     AtomicInteger interruptCount, RexDatabase db) throws Exception {
         ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "rex-agent-worker");
             t.setDaemon(true);
@@ -491,7 +496,19 @@ public class CliMain implements CommandLineRunner {
         taskPauseRequested.set(false);
         executing.set(true);
         interruptCount.set(0);
-        Future<AgentResult> future = executor.submit(task);
+        String sessionUuid = ctx.getSessionId();
+        Path lockDirectory = db != null ? db.lockDirectory()
+                : Path.of(System.getProperty("user.home"), ".rex", "locks");
+        Future<AgentResult> future = executor.submit(() -> {
+            // Ownership follows actual worker lifetime, even if Future.get() is interrupted.
+            try (SessionExecutionLock ignored = SessionExecutionLock.acquire(lockDirectory, sessionUuid)) {
+                AgentResult result = task.call();
+                if (result != null && result.getStatus() == TaskStatus.PAUSED) {
+                    storePausedTaskSummary(result, db);
+                }
+                return result;
+            }
+        });
         try {
             return future.get();
         } catch (ExecutionException e) {
@@ -529,6 +546,7 @@ public class CliMain implements CommandLineRunner {
         String launchDir = System.getProperty("user.dir");
         String sessionName = explicit ? nameArg : generateSessionName();
         if (db == null) {
+            if (explicit) throw new IllegalStateException("Database unavailable; cannot safely open a named session");
             WorkspaceContext ws = buildWorkspaceFor(launchDir, config);
             return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
         }
@@ -547,14 +565,12 @@ public class CliMain implements CommandLineRunner {
                 long now = System.currentTimeMillis();
                 row.setCreatedAt(now);
                 row.setUpdatedAt(now);
-                db.upsertSession(row);
+                row = db.findOrCreateSession(row);
             }
             WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
             return new SessionContext(row.getSessionId(), row.getName(), ws);
         } catch (SQLException e) {
-            System.err.println("[warn] Session DB error: " + e.getMessage());
-            WorkspaceContext ws = buildWorkspaceFor(launchDir, config);
-            return new SessionContext(UUID.randomUUID().toString(), sessionName, ws);
+            throw new IllegalStateException("Cannot resolve persisted session identity: " + sessionName, e);
         }
     }
 
@@ -569,7 +585,6 @@ public class CliMain implements CommandLineRunner {
             out.println(answer);
         }
         if (result.getStatus() == TaskStatus.PAUSED) {
-            storePausedTaskSummary(result, db);
             renderer.paused(ctx.getSessionName());
         }
         out.flush();
@@ -1243,15 +1258,17 @@ public class CliMain implements CommandLineRunner {
         final String capabilityId;
         final String args;
         final String rawInput;
-        /** null = leave the caller's pending-resume flag untouched; non-null = set it to this. */
-        final Boolean pendingResume;
+        /** A /resume response replaces the selection, including clearing it when no task exists. */
+        final PendingResume pendingResume;
+        final boolean resumeSelectionChanged;
 
-        private SlashResult(Kind kind, String capabilityId, String args, String rawInput, Boolean pendingResume) {
+        private SlashResult(Kind kind, String capabilityId, String args, String rawInput, PendingResume pendingResume) {
             this.kind = kind;
             this.capabilityId = capabilityId;
             this.args = args;
             this.rawInput = rawInput;
             this.pendingResume = pendingResume;
+            this.resumeSelectionChanged = false;
         }
 
         static SlashResult runSkill(String capabilityId, String args, String rawInput) {
@@ -1259,8 +1276,17 @@ public class CliMain implements CommandLineRunner {
         }
 
         /** /resume's result: rebuilds the agent only if it actually switched session. */
-        static SlashResult resumed(boolean agentRebuilt, boolean pendingResume) {
-            return new SlashResult(agentRebuilt ? Kind.AGENT_REBUILT : Kind.CONTINUE, null, null, null, pendingResume);
+        private SlashResult(boolean agentRebuilt, PendingResume pendingResume) {
+            this.kind = agentRebuilt ? Kind.AGENT_REBUILT : Kind.CONTINUE;
+            this.capabilityId = null;
+            this.args = null;
+            this.rawInput = null;
+            this.pendingResume = pendingResume;
+            this.resumeSelectionChanged = true;
+        }
+
+        static SlashResult resumed(boolean agentRebuilt, PendingResume pendingResume) {
+            return new SlashResult(agentRebuilt, pendingResume);
         }
     }
 
@@ -1417,7 +1443,7 @@ public class CliMain implements CommandLineRunner {
                             long now = System.currentTimeMillis();
                             row.setCreatedAt(now);
                             row.setUpdatedAt(now);
-                            db.upsertSession(row);
+                            row = db.findOrCreateSession(row);
                             out.printf("  Created new session: %s%n", name);
                         } else {
                             out.printf("  Switched to session: %s%n", name);
@@ -1435,7 +1461,7 @@ public class CliMain implements CommandLineRunner {
                     }
                 }
 
-                boolean pendingResume = false;
+                PendingResume pendingResume = null;
                 try {
                     List<TaskExecutionState> resumable = new SqliteTaskStore(db).listResumable(name);
                     if (!resumable.isEmpty()) {
@@ -1443,7 +1469,7 @@ public class CliMain implements CommandLineRunner {
                                 .max(Comparator.comparingLong(TaskExecutionState::getUpdatedAt))
                                 .orElseThrow();
                         printResumableTaskSummary(state, out);
-                        pendingResume = true;
+                        pendingResume = new PendingResume(ctx.getSessionId(), state.getTaskId(), state.getVersion());
                     }
                 } catch (Exception e) {
                     out.println("  [warn] Could not check for a resumable task: " + e.getMessage());
@@ -1458,10 +1484,10 @@ public class CliMain implements CommandLineRunner {
                     out.flush();
                     return SlashResult.CONTINUE;
                 }
-                try {
+                try (SessionExecutionLock ignored = SessionExecutionLock.acquire(db.lockDirectory(), ctx.getSessionId())) {
                     db.clearConversation(ctx.getSessionName());
                     out.printf("  Cleared conversation history for session: %s%n", ctx.getSessionName());
-                } catch (SQLException e) {
+                } catch (Exception e) {
                     out.println("  [error] " + e.getMessage());
                 }
                 out.flush();

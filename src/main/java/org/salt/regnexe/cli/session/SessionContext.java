@@ -13,7 +13,7 @@ public class SessionContext {
     private String sessionId;
     /**
      * User-visible name passed to {@code req.setSessionId()}.
-     * The framework hashes this to a Long for conversation history lookup.
+     * Conversation and task history retain this name for compatibility; execution locks use UUID.
      */
     private String sessionName;
     /** Workspace root(s) for this session. */

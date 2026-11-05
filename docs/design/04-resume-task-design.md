@@ -76,3 +76,8 @@
 - 启动时主动提示 resumable 任务（可以后续加，不影响现在能不能用）。
 - 一个 session 里多条 resumable 任务只处理最新一条，更早的没有专门的列表/清理机制。
 - 没有专门的"取消 pending resume"命令——真要放弃，重新 `/resume` 一个别的 session 就会覆盖掉标志位。
+
+
+## 2026-11-05 修订
+
+恢复已增加会话执行锁、预览任务 ID/版本绑定以及 TaskStore 乐观版本校验；当前实现以[会话执行与恢复安全](07-session-execution-and-resume-safety.md)为准。原设计中的布尔待恢复标记和无条件覆盖存储已经替换。

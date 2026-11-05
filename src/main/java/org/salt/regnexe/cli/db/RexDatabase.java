@@ -20,6 +20,7 @@ import java.util.Set;
 public class RexDatabase implements AutoCloseable {
 
     private final Connection conn;
+    private final Path lockDirectory;
 
     public RexDatabase() throws Exception {
         this(Path.of(System.getProperty("user.home"), ".rex", "rex.db"));
@@ -29,11 +30,13 @@ public class RexDatabase implements AutoCloseable {
     public RexDatabase(Path databasePath) throws Exception {
         Path absolutePath = databasePath.toAbsolutePath();
         Files.createDirectories(absolutePath.getParent());
+        lockDirectory = absolutePath.getParent().resolve("locks");
         conn = DriverManager.getConnection("jdbc:sqlite:" + absolutePath);
         try {
             conn.setAutoCommit(true);
             // WAL mode: allows concurrent reads while a write is in progress.
             try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA busy_timeout=5000");
                 st.execute("PRAGMA journal_mode=WAL");
             }
             initSchema();
@@ -46,6 +49,10 @@ public class RexDatabase implements AutoCloseable {
             }
             throw e;
         }
+    }
+
+    public Path lockDirectory() {
+        return lockDirectory;
     }
 
     public Connection connection() {
@@ -99,8 +106,26 @@ public class RexDatabase implements AutoCloseable {
                         session_id TEXT    NOT NULL,
                         status     TEXT    NOT NULL,
                         updated_at INTEGER NOT NULL,
-                        data       TEXT    NOT NULL
+                        data       TEXT    NOT NULL,
+                        version    INTEGER NOT NULL DEFAULT 0
                     )""");
+
+            boolean hasVersion = false;
+            try (ResultSet columns = st.executeQuery("PRAGMA table_info(task_execution_states)")) {
+                while (columns.next()) hasVersion |= "version".equals(columns.getString("name"));
+            }
+            if (!hasVersion) {
+                try {
+                    st.execute("ALTER TABLE task_execution_states ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
+                } catch (SQLException migrationError) {
+                    // Another process may have completed the same migration.
+                    boolean migrated = false;
+                    try (ResultSet columns = st.executeQuery("PRAGMA table_info(task_execution_states)")) {
+                        while (columns.next()) migrated |= "version".equals(columns.getString("name"));
+                    }
+                    if (!migrated) throw migrationError;
+                }
+            }
 
             st.execute("""
                     CREATE INDEX IF NOT EXISTS idx_task_session
@@ -128,6 +153,25 @@ public class RexDatabase implements AutoCloseable {
             ps.setLong(6, row.getUpdatedAt());
             ps.execute();
         }
+    }
+
+    /** Create once without changing the winning process's UUID or workspace. */
+    public SessionRow findOrCreateSession(SessionRow candidate) throws SQLException {
+        String sql = """
+                INSERT INTO sessions (session_id, name, working_dir, model, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO NOTHING
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, candidate.getSessionId());
+            ps.setString(2, candidate.getName());
+            ps.setString(3, candidate.getWorkingDir());
+            ps.setString(4, candidate.getModel() != null ? candidate.getModel() : "");
+            ps.setLong(5, candidate.getCreatedAt());
+            ps.setLong(6, candidate.getUpdatedAt());
+            ps.executeUpdate();
+        }
+        return findSessionByName(candidate.getName())
+                .orElseThrow(() -> new SQLException("Session creation failed: " + candidate.getName()));
     }
 
     public void touchSession(String name) throws SQLException {
