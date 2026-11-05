@@ -9,10 +9,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.UUID;
 
-/** Single-host execution ownership. Never delete lock files: the inode must stay stable. */
+/** Single-host open-session ownership. Never delete lock files: the inode must stay stable. */
 public final class SessionExecutionLock implements AutoCloseable {
     private final FileChannel channel;
     private final FileLock lock;
+    private int users = 1;
+    private boolean closed;
 
     private SessionExecutionLock(FileChannel channel, FileLock lock) {
         this.channel = channel;
@@ -26,19 +28,38 @@ public final class SessionExecutionLock implements AutoCloseable {
                 StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         try {
             FileLock lock = channel.tryLock();
-            if (lock == null) throw new IllegalStateException("Session is busy in another executor: " + id);
+            if (lock == null) throw new IllegalStateException("Session is already open in another window: " + id);
             return new SessionExecutionLock(channel, lock);
         } catch (OverlappingFileLockException e) {
             channel.close();
-            throw new IllegalStateException("Session is busy in another executor: " + id, e);
+            throw new IllegalStateException("Session is already open in another window: " + id, e);
         } catch (IOException | RuntimeException e) {
             channel.close();
             throw e;
         }
     }
 
+    /** Keep the open session owned until an already-running worker actually exits. */
+    public synchronized AutoCloseable retain() {
+        if (closed) throw new IllegalStateException("Session is closed");
+        users++;
+        var released = new java.util.concurrent.atomic.AtomicBoolean();
+        return () -> {
+            if (released.compareAndSet(false, true)) releaseUser();
+        };
+    }
+
+    private synchronized void releaseUser() throws IOException {
+        if (--users == 0) {
+            try { lock.release(); } finally { channel.close(); }
+        }
+    }
+
     @Override
-    public void close() throws IOException {
-        try { lock.release(); } finally { channel.close(); }
+    public synchronized void close() throws IOException {
+        if (!closed) {
+            closed = true;
+            releaseUser();
+        }
     }
 }

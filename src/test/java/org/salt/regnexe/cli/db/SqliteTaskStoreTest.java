@@ -79,54 +79,37 @@ public class SqliteTaskStoreTest {
         }
     }
     @Test
-    public void staleSnapshotCannotOverwriteFinishedTaskAcrossConnections() throws Exception {
-        Path path = temporary.getRoot().toPath().resolve("rex.db");
-        try (RexDatabase first = new RexDatabase(path); RexDatabase second = new RexDatabase(path)) {
-            var a = new SqliteTaskStore(first);
-            var b = new SqliteTaskStore(second);
-            TaskExecutionState initial = new TaskExecutionState();
-            initial.setTaskId("cas"); initial.setSessionId("s"); initial.setStatus(TaskStatus.PAUSED);
-            a.save(initial);
-            assertEquals(1, initial.getVersion());
-            var old = a.load("cas").orElseThrow();
-            var current = b.load("cas").orElseThrow();
-            current.setStatus(TaskStatus.FINISHED);
-            b.save(current);
-            old.setStatus(TaskStatus.RUNNING);
-            assertThrows(org.salt.regnexe.agent.core.task.store.TaskConflictException.class, () -> a.save(old));
-            assertEquals(1, old.getVersion());
-            assertEquals(TaskStatus.FINISHED, a.load("cas").orElseThrow().getStatus());
-            assertEquals(2, a.load("cas").orElseThrow().getVersion());
-            var missing = new TaskExecutionState();
-            missing.setTaskId("deleted"); missing.setSessionId("s"); missing.setVersion(8);
-            assertThrows(org.salt.regnexe.agent.core.task.store.TaskConflictException.class, () -> a.save(missing));
+    public void existingVersionColumnAndJsonAreIgnored() throws Exception {
+        Path path = temporary.getRoot().toPath().resolve("previous.db");
+        try (var conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + path);
+             var st = conn.createStatement()) {
+            st.execute("CREATE TABLE task_execution_states (task_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, "
+                    + "status TEXT NOT NULL, updated_at INTEGER NOT NULL, data TEXT NOT NULL, "
+                    + "version INTEGER NOT NULL DEFAULT 0)");
+            st.execute("INSERT INTO task_execution_states VALUES ('task','s','PAUSED',123,"
+                    + "'{\"task_id\":\"task\",\"session_id\":\"s\",\"status\":\"PAUSED\",\"version\":9}',9)");
+        }
+        try (var db = new RexDatabase(path)) {
+            var store = new SqliteTaskStore(db);
+            var state = store.load("task").orElseThrow();
+            assertEquals(TaskStatus.PAUSED, state.getStatus());
+            state.setStatus(TaskStatus.FINISHED);
+            store.save(state);
+            assertEquals(TaskStatus.FINISHED, store.load("task").orElseThrow().getStatus());
+            try (var st = db.connection().createStatement();
+                 var rs = st.executeQuery("SELECT data FROM task_execution_states WHERE task_id='task'")) {
+                assertTrue(rs.next());
+                assertFalse(rs.getString(1).contains("version"));
+            }
         }
     }
 
     @Test
-    public void legacySchemaMigratesWithoutTrustingJsonVersion() throws Exception {
-        Path path = temporary.getRoot().toPath().resolve("legacy.db");
-        try (var conn = java.sql.DriverManager.getConnection("jdbc:sqlite:" + path);
-             var st = conn.createStatement()) {
-            st.execute("CREATE TABLE task_execution_states (task_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, "
-                    + "status TEXT NOT NULL, updated_at INTEGER NOT NULL, data TEXT NOT NULL)");
-            st.execute("INSERT INTO task_execution_states VALUES ('legacy','s','PAUSED',123,"
-                    + "'{\"task_id\":\"legacy\",\"session_id\":\"s\",\"status\":\"PAUSED\"}')");
-        }
-        try (var db = new RexDatabase(path)) {
-            var store = new SqliteTaskStore(db);
-            var state = store.load("legacy").orElseThrow();
-            assertEquals(0, state.getVersion());
-            assertEquals(123, state.getUpdatedAt());
-            var stale = store.load("legacy").orElseThrow();
-            store.save(state);
-            assertEquals(1, state.getVersion());
-            assertThrows(org.salt.regnexe.agent.core.task.store.TaskConflictException.class, () -> store.save(stale));
-            try (var st = db.connection().createStatement()) {
-                st.executeUpdate("UPDATE task_execution_states SET version=9 WHERE task_id='legacy'");
-            }
-            assertEquals(9, store.listResumable("s").get(0).getVersion());
+    public void newDatabaseHasNoTaskVersionColumn() throws Exception {
+        try (var db = new RexDatabase(temporary.getRoot().toPath().resolve("new.db"));
+             var st = db.connection().createStatement();
+             var rs = st.executeQuery("PRAGMA table_info(task_execution_states)")) {
+            while (rs.next()) assertNotEquals("version", rs.getString("name"));
         }
     }
-
 }

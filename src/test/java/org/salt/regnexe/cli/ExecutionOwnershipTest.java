@@ -26,6 +26,7 @@ public class ExecutionOwnershipTest {
         try (var db = new RexDatabase(temporary.getRoot().toPath().resolve("rex.db"))) {
             var ctx = new SessionContext(UUID.randomUUID().toString(), "test",
                     new WorkspaceContext(List.of(temporary.getRoot().toPath())));
+            ctx.open(db.lockDirectory());
             CountDownLatch started = new CountDownLatch(1), release = new CountDownLatch(1), finished = new CountDownLatch(1);
             AtomicReference<Throwable> failure = new AtomicReference<>();
             var method = CliMain.class.getDeclaredMethod("runAgentTask", Callable.class, SessionContext.class,
@@ -49,6 +50,7 @@ public class ExecutionOwnershipTest {
                 waiter.join(10000);
                 assertFalse(waiter.isAlive());
                 assertNull(failure.get());
+                ctx.close();
                 assertThrows(IllegalStateException.class,
                         () -> SessionExecutionLock.acquire(db.lockDirectory(), ctx.getSessionId()));
             } finally {
@@ -59,7 +61,7 @@ public class ExecutionOwnershipTest {
         }
     }
 
-    @Test public void busySessionDoesNotEnterTaskCallable() throws Exception {
+    @Test public void unopenedSessionDoesNotEnterTaskCallable() throws Exception {
         try (var db = new RexDatabase(temporary.getRoot().toPath().resolve("rex.db"))) {
             var ctx = new SessionContext(UUID.randomUUID().toString(), "test",
                     new WorkspaceContext(List.of(temporary.getRoot().toPath())));
@@ -68,6 +70,7 @@ public class ExecutionOwnershipTest {
             method.setAccessible(true);
             AtomicBoolean entered = new AtomicBoolean();
             try (var held = SessionExecutionLock.acquire(db.lockDirectory(), ctx.getSessionId())) {
+                assertThrows(IllegalStateException.class, () -> ctx.open(db.lockDirectory()));
                 InvocationTargetException error = assertThrows(InvocationTargetException.class,
                         () -> method.invoke(new CliMain(), (Callable<AgentResult>) () -> {
                             entered.set(true); return null;

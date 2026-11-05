@@ -83,3 +83,10 @@ opik:
 默认关闭。开启后会向配置服务发送提示词、工具参数和结果（可能包含代码或文件内容）。云端部署可配置 `api_key` 和 `workspace`。协议和已知限制见 [Opik 设计说明](../design/06-opik-tracing.md)。
 
 Disabled by default. Enabling it sends prompts, tool arguments, and output, potentially including code and file contents, to the configured service. Hosted deployments can set `api_key` and `workspace`. See the [Opik design and limitations](../design/06-opik-tracing.md).
+
+
+## 会话打开与独占
+
+`/resume <name>` 打开会话后持续占锁，包括任务预览、等待输入及执行完成后的空闲时间；其他 rex 窗口不能再打开同一会话。`--session <name>` 启动也遵守相同规则。重复 `/resume` 当前会话复用锁；切换到另一会话成功后释放原会话，目标忙碌则保留原会话。退出 rex 后释放锁。
+
+任务恢复按预览的任务 ID 重新加载当前状态，不使用 state version。详细实现见[会话独占与指定任务恢复](../design/07-session-execution-and-resume-safety.md)。

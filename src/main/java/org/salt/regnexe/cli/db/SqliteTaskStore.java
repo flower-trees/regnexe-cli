@@ -31,40 +31,22 @@ public class SqliteTaskStore implements TaskStore {
 
     @Override
     public void save(TaskExecutionState state) {
-        long revision = state.getVersion();
-        // A migrated legacy task can exist at revision zero. A new task also starts at zero.
         String sql = """
-                INSERT INTO task_execution_states (task_id, session_id, status, updated_at, data, version)
-                SELECT ?, ?, ?, ?, ?, 1 WHERE ? = 0
+                INSERT INTO task_execution_states (task_id, session_id, status, updated_at, data)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     session_id=excluded.session_id, status=excluded.status,
-                    updated_at=excluded.updated_at, data=excluded.data,
-                    version=task_execution_states.version+1
-                WHERE task_execution_states.version=?
+                    updated_at=excluded.updated_at, data=excluded.data
                 """;
-        if (revision != 0) {
-            sql = "UPDATE task_execution_states SET session_id=?, status=?, updated_at=?, data=?, "
-                    + "version=version+1 WHERE task_id=? AND version=?";
-        }
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             long now = System.currentTimeMillis();
-            int i = 1;
-            if (revision == 0) ps.setString(i++, state.getTaskId());
-            ps.setString(i++, state.getSessionId());
-            ps.setString(i++, state.getStatus() != null ? state.getStatus().name() : "UNKNOWN");
-            ps.setLong(i++, now);
-            ps.setString(i++, MAPPER.writeValueAsString(state));
-            if (revision == 0) ps.setLong(i++, revision);
-            else ps.setString(i++, state.getTaskId());
-            ps.setLong(i, revision);
-            if (ps.executeUpdate() != 1) {
-                throw new org.salt.regnexe.agent.core.task.store.TaskConflictException(state.getTaskId());
-            }
-            // The dedicated database column is authoritative, including on load.
-            state.setVersion(revision + 1);
+            ps.setString(1, state.getTaskId());
+            ps.setString(2, state.getSessionId());
+            ps.setString(3, state.getStatus() != null ? state.getStatus().name() : "UNKNOWN");
+            ps.setLong(4, now);
+            ps.setString(5, MAPPER.writeValueAsString(state));
+            ps.executeUpdate();
             state.setUpdatedAt(now);
-        } catch (org.salt.regnexe.agent.core.task.store.TaskConflictException e) {
-            throw e;
         } catch (Exception e) {
             throw new RuntimeException("save failed for task " + state.getTaskId(), e);
         }
@@ -72,7 +54,7 @@ public class SqliteTaskStore implements TaskStore {
 
     @Override
     public Optional<TaskExecutionState> load(String taskId) {
-        String sql = "SELECT data, version, updated_at FROM task_execution_states WHERE task_id = ?";
+        String sql = "SELECT data, updated_at FROM task_execution_states WHERE task_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, taskId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -88,7 +70,6 @@ public class SqliteTaskStore implements TaskStore {
 
     private TaskExecutionState readState(ResultSet rs) throws Exception {
         TaskExecutionState state = LOAD_MAPPER.readValue(rs.getString("data"), TaskExecutionState.class);
-        state.setVersion(rs.getLong("version"));
         state.setUpdatedAt(rs.getLong("updated_at"));
         return state;
     }
@@ -100,7 +81,7 @@ public class SqliteTaskStore implements TaskStore {
 
     @Override
     public List<TaskExecutionState> listResumable(String sessionId) {
-        String sql = "SELECT data, version, updated_at FROM task_execution_states WHERE session_id = ? AND status != 'FINISHED'";
+        String sql = "SELECT data, updated_at FROM task_execution_states WHERE session_id = ? AND status != 'FINISHED'";
         List<TaskExecutionState> result = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, sessionId);

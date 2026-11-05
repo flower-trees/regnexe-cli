@@ -106,26 +106,8 @@ public class RexDatabase implements AutoCloseable {
                         session_id TEXT    NOT NULL,
                         status     TEXT    NOT NULL,
                         updated_at INTEGER NOT NULL,
-                        data       TEXT    NOT NULL,
-                        version    INTEGER NOT NULL DEFAULT 0
+                        data       TEXT    NOT NULL
                     )""");
-
-            boolean hasVersion = false;
-            try (ResultSet columns = st.executeQuery("PRAGMA table_info(task_execution_states)")) {
-                while (columns.next()) hasVersion |= "version".equals(columns.getString("name"));
-            }
-            if (!hasVersion) {
-                try {
-                    st.execute("ALTER TABLE task_execution_states ADD COLUMN version INTEGER NOT NULL DEFAULT 0");
-                } catch (SQLException migrationError) {
-                    // Another process may have completed the same migration.
-                    boolean migrated = false;
-                    try (ResultSet columns = st.executeQuery("PRAGMA table_info(task_execution_states)")) {
-                        while (columns.next()) migrated |= "version".equals(columns.getString("name"));
-                    }
-                    if (!migrated) throw migrationError;
-                }
-            }
 
             st.execute("""
                     CREATE INDEX IF NOT EXISTS idx_task_session

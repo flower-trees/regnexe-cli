@@ -46,7 +46,6 @@ import org.salt.regnexe.cli.event.CliEventListener;
 import org.salt.regnexe.cli.event.OpikEventListener;
 import org.salt.regnexe.cli.observe.OtlpSpanExporter;
 import org.salt.regnexe.cli.session.SessionContext;
-import org.salt.regnexe.cli.session.SessionExecutionLock;
 import org.salt.regnexe.cli.session.PendingResume;
 import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
@@ -374,113 +373,114 @@ public class CliMain implements CommandLineRunner {
         });
 
         SessionContext ctx = resolveSession(sessionArg, config, db);
-        RegnexeAgent agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
-        agentRef.set(agent);
+        try (ctx) {
+            ctx.open(db != null ? db.lockDirectory()
+                    : Path.of(System.getProperty("user.home"), ".rex", "locks"));
+            RegnexeAgent agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
+            agentRef.set(agent);
 
-        String apiKey = config.effectiveApiKey();
-        String missingApiKeyEnv = (apiKey == null || apiKey.isBlank())
-                ? vendorKeyEnvName(config.getModel().getVendor()) : null;
-        renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
-        if (dbWarning != null) renderer.warning(dbWarning);
+            String apiKey = config.effectiveApiKey();
+            String missingApiKeyEnv = (apiKey == null || apiKey.isBlank())
+                    ? vendorKeyEnvName(config.getModel().getVendor()) : null;
+            renderer.startup(VERSION, ctx, config, missingApiKeyEnv);
+            if (dbWarning != null) renderer.warning(dbWarning);
 
-        // Bind the task revision previewed by /resume. A later /resume replaces this selection;
-        // other slash commands leave it intact. Validate it under the worker's session lock.
-        PendingResume pendingResume = null;
+            // The open session remains locked while idle. /resume binds a task ID;
+            // execution reloads that task from storage before continuing.
+            PendingResume pendingResume = null;
 
-        while (!exitRequested.get()) {
-            String input;
-            try {
-                input = reader.readLine(renderer.prompt(ctx));
-            } catch (UserInterruptException e) {
-                break;
-            } catch (EndOfFileException e) {
-                break;
-            }
+            while (!exitRequested.get()) {
+                String input;
+                try {
+                    input = reader.readLine(renderer.prompt(ctx));
+                } catch (UserInterruptException e) {
+                    break;
+                } catch (EndOfFileException e) {
+                    break;
+                }
 
-            if (input == null) break;
-            input = input.trim();
-            if (input.isEmpty()) continue;
+                if (input == null) break;
+                input = input.trim();
+                if (input.isEmpty()) continue;
 
-            if (input.startsWith("/")) {
-                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
-                if (result == SlashResult.EXIT) break;
-                if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
-                    // ctx was mutated in-place by handleSlashCommand (/resume)
-                    agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
-                    agentRef.set(agent);
-                } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
-                    RegnexeAgent taskAgent = agent;
-                    String capId = result.capabilityId;
-                    String skillArgs = result.args;
-                    String displayGoal = result.rawInput;
-                    try {
-                        AgentResult skillResult = runAgentTask(
-                                () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
-                                ctx, out, executing, interruptCount, db);
-                        handleAgentResult(skillResult, ctx, out, renderer, db);
-                        if (db != null) {
-                            try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                if (input.startsWith("/")) {
+                    SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                    if (result == SlashResult.EXIT) break;
+                    if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
+                        // ctx was mutated in-place by handleSlashCommand (/resume)
+                        agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
+                        agentRef.set(agent);
+                    } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                        RegnexeAgent taskAgent = agent;
+                        String capId = result.capabilityId;
+                        String skillArgs = result.args;
+                        String displayGoal = result.rawInput;
+                        try {
+                            AgentResult skillResult = runAgentTask(
+                                    () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
+                                    ctx, out, executing, interruptCount, db);
+                            handleAgentResult(skillResult, ctx, out, renderer, db);
+                            if (db != null) {
+                                try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                            }
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        } catch (Exception e) {
+                            out.println("  [error] " + e.getMessage());
+                            out.flush();
                         }
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    } catch (Exception e) {
-                        out.println("  [error] " + e.getMessage());
-                        out.flush();
                     }
+                    if (result.resumeSelectionChanged) {
+                        pendingResume = result.pendingResume;
+                    }
+                    continue;
                 }
-                if (result.resumeSelectionChanged) {
-                    pendingResume = result.pendingResume;
+
+                try {
+                    RegnexeAgent taskAgent = agent;
+                    AgentResult result;
+                    if (pendingResume != null) {
+                        PendingResume selected = pendingResume;
+                        pendingResume = null;
+                        String supplement = input;
+                        result = runAgentTask(
+                                () -> {
+                                    selected.checkSession(ctx.getSessionId());
+                                    return taskAgent.resumeTask(ctx.getSessionName(), selected.taskId(), supplement);
+                                },
+                                ctx,
+                                out,
+                                executing,
+                                interruptCount, db);
+                    } else {
+                        TaskRequest req = new TaskRequest();
+                        req.setGoal(injectWorkspacePreamble(input, ctx));
+                        req.setSessionId(ctx.getSessionName());
+                        result = runAgentTask(
+                                () -> taskAgent.execute(req),
+                                ctx,
+                                out,
+                                executing,
+                                interruptCount, db);
+                    }
+                    handleAgentResult(result, ctx, out, renderer, db);
+                    if (db != null) {
+                        try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                } catch (Exception e) {
+                    renderer.error(describeError(e));
                 }
-                continue;
             }
 
-            try {
-                RegnexeAgent taskAgent = agent;
-                AgentResult result;
-                if (pendingResume != null) {
-                    PendingResume selected = pendingResume;
-                    pendingResume = null;
-                    String supplement = input;
-                    result = runAgentTask(
-                            () -> {
-                                selected.checkSession(ctx.getSessionId());
-                                return taskAgent.resumeTask(ctx.getSessionName(), selected.taskId(),
-                                        selected.expectedVersion(), supplement);
-                            },
-                            ctx,
-                            out,
-                            executing,
-                            interruptCount, db);
-                } else {
-                    TaskRequest req = new TaskRequest();
-                    req.setGoal(injectWorkspacePreamble(input, ctx));
-                    req.setSessionId(ctx.getSessionName());
-                    result = runAgentTask(
-                            () -> taskAgent.execute(req),
-                            ctx,
-                            out,
-                            executing,
-                            interruptCount, db);
-                }
-                handleAgentResult(result, ctx, out, renderer, db);
-                if (db != null) {
-                    try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                renderer.error(describeError(e));
-            }
+            renderer.goodbye();
+        } finally {
+            terminal.close();
         }
-
-        renderer.goodbye();
-        terminal.close();
-        // db.close() is handled by the shutdown hook registered above — don't double-close here.
-        // A clean exit here never leaves a RUNNING task behind (the REPL loop only returns after
-        // runAgentTask() completes); a RUNNING row only survives a hard kill (kill -9, crash) that
-        // never reaches this point at all — /resume's listResumable() picks those up regardless.
+        // Database and MCP resources are closed by the shutdown hooks.
     }
 
     private AgentResult runAgentTask(Callable<AgentResult> task,
@@ -496,12 +496,9 @@ public class CliMain implements CommandLineRunner {
         taskPauseRequested.set(false);
         executing.set(true);
         interruptCount.set(0);
-        String sessionUuid = ctx.getSessionId();
-        Path lockDirectory = db != null ? db.lockDirectory()
-                : Path.of(System.getProperty("user.home"), ".rex", "locks");
         Future<AgentResult> future = executor.submit(() -> {
-            // Ownership follows actual worker lifetime, even if Future.get() is interrupted.
-            try (SessionExecutionLock ignored = SessionExecutionLock.acquire(lockDirectory, sessionUuid)) {
+            // Retain the already-open session; never reacquire its OS lock per task.
+            try (var ignored = ctx.retainExecution()) {
                 AgentResult result = task.call();
                 if (result != null && result.getStatus() == TaskStatus.PAUSED) {
                     storePausedTaskSummary(result, db);
@@ -1431,34 +1428,19 @@ public class CliMain implements CommandLineRunner {
                 // Unlike the old /switch, don't short-circuit when already in this session —
                 // checking for a resumable task is the point even if nothing else needs to change.
                 boolean switching = !name.equals(ctx.getSessionName());
-                if (switching) {
-                    try {
-                        SessionRow row = db.findSessionByName(name).orElse(null);
-                        if (row == null) {
-                            row = new SessionRow();
-                            row.setSessionId(UUID.randomUUID().toString());
-                            row.setName(name);
-                            row.setWorkingDir(System.getProperty("user.dir"));
-                            row.setModel(config.effectiveModel());
-                            long now = System.currentTimeMillis();
-                            row.setCreatedAt(now);
-                            row.setUpdatedAt(now);
-                            row = db.findOrCreateSession(row);
-                            out.printf("  Created new session: %s%n", name);
-                        } else {
-                            out.printf("  Switched to session: %s%n", name);
-                        }
-                        WorkspaceContext ws = buildWorkspaceFor(row.getWorkingDir(), config);
-                        // Mutate ctx in-place — main loop rebuilds agent after this returns AGENT_REBUILT.
-                        ctx.setSessionId(row.getSessionId());
-                        ctx.setSessionName(row.getName());
-                        ctx.setWorkspace(ws);
-                        out.printf("  Workspace: %s%n", ws.primaryRoot());
-                    } catch (SQLException e) {
-                        out.println("  [error] " + e.getMessage());
-                        out.flush();
-                        return SlashResult.CONTINUE;
+                try {
+                    if (switching) {
+                        SessionContext destination = resolveSession(name, config, db);
+                        ctx.switchTo(destination, db.lockDirectory());
+                        out.printf("  Opened session: %s%n", ctx.getSessionName());
+                        out.printf("  Workspace: %s%n", ctx.getWorkspace().primaryRoot());
+                    } else {
+                        ctx.open(db.lockDirectory());
                     }
+                } catch (Exception e) {
+                    out.println("  [error] " + e.getMessage());
+                    out.flush();
+                    return SlashResult.CONTINUE;
                 }
 
                 PendingResume pendingResume = null;
@@ -1469,7 +1451,7 @@ public class CliMain implements CommandLineRunner {
                                 .max(Comparator.comparingLong(TaskExecutionState::getUpdatedAt))
                                 .orElseThrow();
                         printResumableTaskSummary(state, out);
-                        pendingResume = new PendingResume(ctx.getSessionId(), state.getTaskId(), state.getVersion());
+                        pendingResume = new PendingResume(ctx.getSessionId(), state.getTaskId());
                     }
                 } catch (Exception e) {
                     out.println("  [warn] Could not check for a resumable task: " + e.getMessage());
@@ -1484,7 +1466,7 @@ public class CliMain implements CommandLineRunner {
                     out.flush();
                     return SlashResult.CONTINUE;
                 }
-                try (SessionExecutionLock ignored = SessionExecutionLock.acquire(db.lockDirectory(), ctx.getSessionId())) {
+                try (var ignored = ctx.retainExecution()) {
                     db.clearConversation(ctx.getSessionName());
                     out.printf("  Cleared conversation history for session: %s%n", ctx.getSessionName());
                 } catch (Exception e) {

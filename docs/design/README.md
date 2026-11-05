@@ -10,7 +10,7 @@
 | 04 | [任务恢复设计](04-resume-task-design.md) | 当前 `/resume` 的设计与已知边界 |
 | 05 | [CLI 交互皮肤](05-cli-ui-theme.md) | 终端主题、渲染和确认交互方案 |
 | 06 | [Opik 链路追踪](06-opik-tracing.md) | 追踪接入、事件关系和使用限制 |
-| 07 | [会话执行与恢复安全](07-session-execution-and-resume-safety.md) | 本地执行互斥、指定任务恢复、版本校验及边界 |
+| 07 | [会话执行与恢复安全](07-session-execution-and-resume-safety.md) | 打开会话即占锁、指定任务恢复及边界 |
 
 这些文档保留各自阶段的设计背景，不应整体当作当前待办清单。当前功能以代码和[使用配置说明](../guide/configuration.md)为准；后续方向见[开发规划](../plan/README.md)。
 

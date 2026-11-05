@@ -80,4 +80,4 @@
 
 ## 2026-11-05 修订
 
-恢复已增加会话执行锁、预览任务 ID/版本绑定以及 TaskStore 乐观版本校验；当前实现以[会话执行与恢复安全](07-session-execution-and-resume-safety.md)为准。原设计中的布尔待恢复标记和无条件覆盖存储已经替换。
+最终采用打开会话即占锁：`/resume` 先独占会话再预览，等待输入及执行结束后继续持锁，切换或退出才释放。预览只绑定任务 ID，执行时重新加载该任务；不使用 state version 或乐观锁。当前实现以[会话独占与指定任务恢复](07-session-execution-and-resume-safety.md)为准。
