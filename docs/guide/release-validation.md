@@ -33,7 +33,7 @@ The release script builds first unless `--skip-build` is specified, then creates
 2. 发起只读问题，验证规划、工具调用和最终输出。
 3. 请求一次文件编辑，检查 diff 与接受/拒绝行为；确认 Shell 工具的确认流程。
 4. 重启后 `/history release-check`，确认消息保留。
-5. 对运行中的任务发送 Ctrl+C，确认实际任务状态，再 `/resume release-check` 并补充指令；失败任务也需验收恢复，不能只检查数据库反序列化。
+5. 对运行中的任务发送 Esc，确认实际任务状态，再 `/resume release-check` 并补充指令；失败任务也需验收恢复，不能只检查数据库反序列化。
 6. 按需验收 Skill、MCP、Opik 的真实服务连接。Opik 默认关闭。
 
 Use a local terminal and temporary workspace to validate interactive rendering, real model calls, edit and shell approvals, history across restarts, interrupted/failed task recovery, and configured Skill/MCP/Opik connections. Database tests are not end-to-end recovery acceptance.

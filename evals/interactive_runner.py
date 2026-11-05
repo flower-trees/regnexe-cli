@@ -73,20 +73,25 @@ class App:
 
     def slash(self, command, expected=None):
         self.child.sendline(command)
-        self.child.expect_exact(PROMPT)
-        text = self.child.before
         if expected:
-            assert expected in text, text[-3000:]
+            self.child.expect_exact(expected)
+            text = self.child.before + expected
+        else:
+            self.child.expect_exact(command)
+            text = self.child.before
+        self.child.expect_exact(PROMPT)
+        text += self.child.before
         return text
 
     def write(self, filename, content, confirm, choice="yes", supplement=""):
         self.child.sendline(supplement + f" Use only write_file to create {filename} containing exactly "
                             f"{content} with no newline. Do not use bash. Stop after writing.")
-        index = self.child.expect([CONFIRM, re_escape(PROMPT), pexpect.EOF])
+        index = self.child.expect([CONFIRM, r"\[task complete\] status=", pexpect.EOF])
         asked = index == 0
         if asked:
             self.child.sendline(choice if confirm else "no")
-            self.child.expect_exact(PROMPT)
+            self.child.expect_exact("[task complete] status=")
+        self.child.expect_exact(PROMPT)
         assert asked == confirm, f"{filename}: expected confirmation={confirm}, observed={asked}"
         target = self.workdir / filename
         assert target.exists() and target.read_text() == content, f"Actual file mismatch: {target}"
@@ -117,9 +122,9 @@ def session_a_b_a(sandbox, jar):
     app = App(sandbox, jar)
     try:
         steps = [app.write("a1.txt", "a1", True, "always")]
-        app.slash("/resume B", "Created new session: B")
+        app.slash("/resume B", "Opened session: B")
         steps.append(app.write("b1.txt", "b1", True))
-        app.slash("/resume A", "Switched to session: A")
+        app.slash("/resume A", "Opened session: A")
         steps.append(app.write("a2.txt", "a2", False))
         with app.database() as db:
             rows = db.execute("SELECT name, session_id FROM sessions WHERE name IN ('A','B')").fetchall()
@@ -165,7 +170,7 @@ def restart(sandbox, jar):
         second.close()
 
 
-def ctrl_c(sandbox, jar):
+def interrupt_task(sandbox, jar):
     app = App(sandbox, jar)
     tracked = []
     try:
@@ -184,8 +189,9 @@ def ctrl_c(sandbox, jar):
                 pass
         assert tracked, "No actual sleep child was observed"
         interrupted = time.monotonic()
-        app.child.sendcontrol("c")
-        app.child.expect_exact(PROMPT, timeout=40)
+        app.child.send("\x1b")
+        app.child.expect_exact("[task complete] status=PAUSED", timeout=10)
+        app.child.expect_exact(PROMPT, timeout=5)
         paused_output = app.child.before
         with app.database() as db:
             row = db.execute("SELECT status, data FROM task_execution_states ORDER BY updated_at DESC LIMIT 1").fetchone()
@@ -198,10 +204,16 @@ def ctrl_c(sandbox, jar):
         alive = process_table()
         assert not any(pid in alive for pid in tracked), f"Sleep processes remain: {tracked}"
         pause_seconds = time.monotonic() - interrupted
-        app.slash("/resume A")
+        app.slash("/resume A", "Type your next message to continue it.")
         resumed = app.write("resumed.txt", "resumed-ok", True,
                             supplement="Do not repeat the previous sleep. Finish by writing the file.")
-        return {"tracked_sleep_pids": tracked, "pause_seconds": pause_seconds,
+        exit_started = time.monotonic()
+        app.child.sendcontrol("c")
+        app.child.expect(pexpect.EOF, timeout=7)
+        exit_seconds = time.monotonic() - exit_started
+        assert exit_seconds < 6, f"Ctrl+C exit took {exit_seconds}s"
+        return {"interrupt_key": "Escape", "ctrl_c_exit_seconds": exit_seconds,
+                "tracked_sleep_pids": tracked, "pause_seconds": pause_seconds,
                 "ledger_status_before_resume": row[0], "partial_output": partial[0],
                 "resume": resumed, "paused_terminal_output": paused_output}
     finally:
@@ -216,7 +228,7 @@ def ctrl_c(sandbox, jar):
 
 SCENARIOS = {"interactive-session-a-b-a": session_a_b_a,
              "interactive-agent-rebuild": agent_rebuild,
-             "interactive-restart": restart, "interactive-ctrl-c": ctrl_c}
+             "interactive-restart": restart, "interactive-ctrl-c": interrupt_task}
 
 
 def main():

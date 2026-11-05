@@ -28,12 +28,15 @@
     - Current implementation asks again after restart.
     - Persistent session approvals are a separate TODO, not implemented or counted as passing here.
 
+# Historical case ID retained for experiment comparisons; Esc now interrupts, Ctrl+C exits.
 - id: interactive-ctrl-c
   mode: interactive
   category: shell_lifecycle
   steps:
-    - Ask bash to run printf started; sleep 45, then press Ctrl+C once after started appears.
+    - Ask bash to run printf started; sleep 45, then press Esc once after the actual child process starts.
     - Inspect paused status and the command process, then resume with a supplement.
+    - Press Ctrl+C and verify the CLI exits promptly.
   expected:
     - Shell stops, partial output is retained, tracked child processes are cleaned and agent pauses.
     - Resuming does not silently repeat external side effects.
+    - Ctrl+C exits the CLI within the bounded cleanup time.

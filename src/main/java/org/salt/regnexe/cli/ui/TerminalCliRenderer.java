@@ -46,10 +46,19 @@ public class TerminalCliRenderer implements CliRenderer {
     private record ApprovalKey(String sessionId, String toolKey) {}
     private final Set<ApprovalKey> alwaysAllowed = ConcurrentHashMap.newKeySet();
     private volatile String approvalSessionId;
+    private java.util.function.BiFunction<String, String, ConfirmChoice> confirmationHandler;
+
+    public void setConfirmationHandler(java.util.function.BiFunction<String, String, ConfirmChoice> handler) {
+        this.confirmationHandler = handler;
+    }
 
     public TerminalCliRenderer(Terminal terminal, ThemeConfig theme) {
+        this(terminal, theme, terminal.writer());
+    }
+
+    public TerminalCliRenderer(Terminal terminal, ThemeConfig theme, PrintWriter out) {
         this.terminal = terminal;
-        this.out = terminal.writer();
+        this.out = out;
         this.theme = theme;
     }
 
@@ -276,9 +285,9 @@ public class TerminalCliRenderer implements CliRenderer {
         if (key != null && alwaysAllowed.contains(key)) {
             return ConfirmChoice.YES;
         }
-        ConfirmChoice choice = theme.theme() != CliTheme.CODEX
-                ? confirmLine(verb)
-                : confirmMenu(verb);
+        ConfirmChoice choice = confirmationHandler != null
+                ? confirmationHandler.apply(verb, rememberKey)
+                : theme.theme() != CliTheme.CODEX ? confirmLine(verb) : confirmMenu(verb);
         if (choice == ConfirmChoice.ALWAYS && key != null) {
             alwaysAllowed.add(key);
         }

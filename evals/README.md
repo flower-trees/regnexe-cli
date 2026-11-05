@@ -8,7 +8,7 @@
 |---|---:|---|
 | `dataset/hardening-regression-2026-11.yaml` | 31 | 对应已有 Java 回归测试，不交给模型判断 |
 | `dataset/hardening-agent-2026-11.yaml` | 12 | 真实模型下的正常工具调用、超时、路径边界与多轮任务 |
-| `dataset/hardening-interactive-2026-11.yaml` | 4 | 真实 PTY 自动验收 Ctrl+C、会话隔离、Agent 重建与重启 |
+| `dataset/hardening-interactive-2026-11.yaml` | 4 | 真实 PTY 自动验收 Esc 暂停、Ctrl+C 退出、会话隔离、Agent 重建与重启 |
 | `dataset/cases.yaml` | 28 | 保留的旧综合用例，不与本次结果混合 |
 
 计划与观察顺序见 [加固功能评测计划](../docs/plan/02-hardening-evaluation-plan.md)。导入数据集只保存定义，不表示已执行或通过。
@@ -105,3 +105,15 @@ PTY 使用独立 Java 用户目录并开启确认，保留终端日志、会话�
 Opik 默认使用本机 API 和 `default` workspace，可通过 `OPIK_URL_OVERRIDE` / `OPIK_WORKSPACE` 覆盖。入口设置 localhost 的 `NO_PROXY`，避免本机 Trace 被转发到外部代理。
 
 旧综合数据集仍可使用原来的 `--tag` / `--only` / `--case-id` 入口；其部分用例使用 Judge，因此不与本次规则评测直接比较。
+
+
+### 本地交互控制回归
+
+```bash
+mvn package
+evals/.venv/bin/python -m unittest discover -s evals -p test_interactive_controls.py -v
+```
+
+这 5 项测试使用真实 PTY 和本地模拟模型 HTTP 服务，无需 Key 或 Opik：验证模型等待时补充输入、补充指令改变同一任务的工具动作、Esc 取消模型/Shell/确认等待以及 Ctrl+C 退出。模拟服务测试用于确定性交互回归，不代替官方模型评测。
+
+真实终端现在始终接收输入，运行中普通输入补充到当前任务；Esc 暂停，Ctrl+C 退出。确认等待时输入 yes/no/always/pause。管道输入仍按原先逐条执行，避免批量用例的多轮输入被误作同一任务补充。原 `interactive-ctrl-c` 用例 ID 保留作历史对比，其步骤已改为 Esc 暂停并增加 Ctrl+C 退出验收。

@@ -39,6 +39,9 @@ import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
 import org.salt.regnexe.agent.core.task.state.reflection.ReflectionDecision;
 import org.salt.regnexe.agent.core.task.state.TaskRequest;
 import org.salt.regnexe.cli.config.RexConfig;
+import org.salt.regnexe.cli.interactive.*;
+import org.salt.jlangchain.ai.client.stream.HttpStreamClient;
+import org.jline.reader.Reference;
 import org.salt.regnexe.cli.db.RexDatabase;
 import org.salt.regnexe.cli.db.SqliteConversationStorage;
 import org.salt.regnexe.cli.db.SqliteTaskStore;
@@ -121,6 +124,10 @@ public class CliMain implements CommandLineRunner {
     private final EnabledStateWriter enabledStateWriter = new EnabledStateWriter();
     private final ScopeResolver scopeResolver = new ScopeResolver();
     private final AtomicBoolean taskPauseRequested = new AtomicBoolean(false);
+    private final InteractiveTaskRunner liveTasks = new InteractiveTaskRunner();
+    private final AtomicBoolean mcpReconnectRequired = new AtomicBoolean();
+    private Runnable reconnectAfterCancellation = () -> {};
+    @Autowired(required = false) private List<HttpStreamClient> httpClients = List.of();
 
     // The MCP client currently backing the running agent's MCP-sourced tools — both directly
     // configured (.rex/mcp.json) and Plugin-carried (<plugin-dir>/mcp.json) servers connect
@@ -181,7 +188,9 @@ public class CliMain implements CommandLineRunner {
 
         SpringApplication app = new SpringApplication(CliMain.class);
         app.setWebApplicationType(WebApplicationType.NONE);
-        app.run(args);
+        try (var context = app.run(args)) {
+            // The REPL has exited; close framework executors before JVM shutdown hooks run.
+        }
     }
 
     /**
@@ -313,8 +322,10 @@ public class CliMain implements CommandLineRunner {
                 .variable(LineReader.HISTORY_FILE, historyFile)
                 .build();
 
-        PrintWriter out = terminal.writer();
-        CliRenderer renderer = new TerminalCliRenderer(terminal, ThemeConfig.from(config.getUi(), terminal));
+        boolean interactive = System.console() != null && !Terminal.TYPE_DUMB.equals(terminal.getType());
+        PrintWriter out = interactive ? new PrintWriter(new AboveLineWriter(reader), true) : terminal.writer();
+        TerminalCliRenderer renderer = new TerminalCliRenderer(terminal, ThemeConfig.from(config.getUi(), terminal), out);
+        httpClients.forEach(InteractiveChatModel::installCancellation);
 
         RexDatabase db;
         String dbWarning = null;
@@ -354,23 +365,21 @@ public class CliMain implements CommandLineRunner {
             taskPauseRequested.set(true);
             RegnexeAgent a = agentRef.get();
             if (a != null) a.pause();
+            liveTasks.pause();
         };
-        terminal.handle(Terminal.Signal.INT, signal -> {
-            if (!executing.get()) {
-                exitRequested.set(true);
-                mainThread.interrupt();
-                return;
+        Runnable exitAction = () -> {
+            if (exitRequested.compareAndSet(false, true)) {
+                out.println("Exiting; cancelling current task..."); out.flush();
+                pauseAction.run(); liveTasks.pause();
+                Thread watchdog = new Thread(() -> {
+                    try { Thread.sleep(5000); } catch (InterruptedException ignored) { return; }
+                    Runtime.getRuntime().halt(130);
+                }, "rex-exit-deadline");
+                watchdog.setDaemon(true); watchdog.start();
             }
-
-            int count = interruptCount.incrementAndGet();
-            if (count == 1) {
-                renderer.interruptPausing();
-                pauseAction.run();
-            } else {
-                renderer.secondInterrupt();
-                System.exit(130);
-            }
-        });
+            mainThread.interrupt();
+        };
+        terminal.handle(Terminal.Signal.INT, signal -> exitAction.run());
 
         SessionContext ctx = resolveSession(sessionArg, config, db);
         try (ctx) {
@@ -389,98 +398,232 @@ public class CliMain implements CommandLineRunner {
             // execution reloads that task from storage before continuing.
             PendingResume pendingResume = null;
 
-            while (!exitRequested.get()) {
-                String input;
-                try {
-                    input = reader.readLine(renderer.prompt(ctx));
-                } catch (UserInterruptException e) {
-                    break;
-                } catch (EndOfFileException e) {
-                    break;
-                }
+            if (interactive) {
+                runInteractiveRepl(reader, renderer, out, config, terminal, ctx, db, agentRef,
+                        exitRequested, pauseAction, exitAction);
+            } else {
+                while (!exitRequested.get()) {
+                    String input;
+                    try {
+                        input = reader.readLine(renderer.prompt(ctx));
+                    } catch (UserInterruptException e) {
+                        break;
+                    } catch (EndOfFileException e) {
+                        break;
+                    }
 
-                if (input == null) break;
-                input = input.trim();
-                if (input.isEmpty()) continue;
+                    if (input == null) break;
+                    input = input.trim();
+                    if (input.isEmpty()) continue;
 
-                if (input.startsWith("/")) {
-                    SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
-                    if (result == SlashResult.EXIT) break;
-                    if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
-                        // ctx was mutated in-place by handleSlashCommand (/resume)
-                        agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
-                        agentRef.set(agent);
-                    } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
-                        RegnexeAgent taskAgent = agent;
-                        String capId = result.capabilityId;
-                        String skillArgs = result.args;
-                        String displayGoal = result.rawInput;
-                        try {
-                            AgentResult skillResult = runAgentTask(
-                                    () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
-                                    ctx, out, executing, interruptCount, db);
-                            handleAgentResult(skillResult, ctx, out, renderer, db);
-                            if (db != null) {
-                                try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                    if (input.startsWith("/")) {
+                        SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                        if (result == SlashResult.EXIT) break;
+                        if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
+                            // ctx was mutated in-place by handleSlashCommand (/resume)
+                            agent = buildAgent(ctx, config, terminal, renderer, db, pauseAction);
+                            agentRef.set(agent);
+                        } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                            RegnexeAgent taskAgent = agent;
+                            String capId = result.capabilityId;
+                            String skillArgs = result.args;
+                            String displayGoal = result.rawInput;
+                            try {
+                                AgentResult skillResult = runAgentTask(
+                                        () -> taskAgent.executeSkill(capId, skillArgs, ctx.getSessionName(), displayGoal),
+                                        ctx, out, executing, interruptCount, db);
+                                handleAgentResult(skillResult, ctx, out, renderer, db);
+                                if (db != null) {
+                                    try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                                }
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                                break;
+                            } catch (Exception e) {
+                                out.println("  [error] " + e.getMessage());
+                                out.flush();
                             }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        } catch (Exception e) {
-                            out.println("  [error] " + e.getMessage());
-                            out.flush();
                         }
+                        if (result.resumeSelectionChanged) {
+                            pendingResume = result.pendingResume;
+                        }
+                        continue;
                     }
-                    if (result.resumeSelectionChanged) {
-                        pendingResume = result.pendingResume;
+
+                    try {
+                        RegnexeAgent taskAgent = agent;
+                        AgentResult result;
+                        if (pendingResume != null) {
+                            PendingResume selected = pendingResume;
+                            pendingResume = null;
+                            String supplement = input;
+                            result = runAgentTask(
+                                    () -> {
+                                        selected.checkSession(ctx.getSessionId());
+                                        return taskAgent.resumeTask(ctx.getSessionName(), selected.taskId(), supplement);
+                                    },
+                                    ctx,
+                                    out,
+                                    executing,
+                                    interruptCount, db);
+                        } else {
+                            TaskRequest req = new TaskRequest();
+                            req.setGoal(injectWorkspacePreamble(input, ctx));
+                            req.setSessionId(ctx.getSessionName());
+                            result = runAgentTask(
+                                    () -> taskAgent.execute(req),
+                                    ctx,
+                                    out,
+                                    executing,
+                                    interruptCount, db);
+                        }
+                        handleAgentResult(result, ctx, out, renderer, db);
+                        if (db != null) {
+                            try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    } catch (Exception e) {
+                        renderer.error(describeError(e));
                     }
-                    continue;
                 }
 
-                try {
-                    RegnexeAgent taskAgent = agent;
-                    AgentResult result;
-                    if (pendingResume != null) {
-                        PendingResume selected = pendingResume;
-                        pendingResume = null;
-                        String supplement = input;
-                        result = runAgentTask(
-                                () -> {
-                                    selected.checkSession(ctx.getSessionId());
-                                    return taskAgent.resumeTask(ctx.getSessionName(), selected.taskId(), supplement);
-                                },
-                                ctx,
-                                out,
-                                executing,
-                                interruptCount, db);
-                    } else {
-                        TaskRequest req = new TaskRequest();
-                        req.setGoal(injectWorkspacePreamble(input, ctx));
-                        req.setSessionId(ctx.getSessionName());
-                        result = runAgentTask(
-                                () -> taskAgent.execute(req),
-                                ctx,
-                                out,
-                                executing,
-                                interruptCount, db);
-                    }
-                    handleAgentResult(result, ctx, out, renderer, db);
-                    if (db != null) {
-                        try { db.touchSession(ctx.getSessionName()); } catch (Exception ignored) {}
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    renderer.error(describeError(e));
-                }
             }
-
+            Thread.interrupted();
             renderer.goodbye();
         } finally {
+            Thread.interrupted();
+            liveTasks.close();
             terminal.close();
         }
         // Database and MCP resources are closed by the shutdown hooks.
+    }
+
+    private void runInteractiveRepl(LineReader reader, TerminalCliRenderer renderer, PrintWriter out,
+                                    RexConfig config, Terminal terminal, SessionContext ctx, RexDatabase db,
+                                    AtomicReference<RegnexeAgent> agentRef, AtomicBoolean exitRequested,
+                                    Runnable pauseAction, Runnable exitAction) throws Exception {
+        reconnectAfterCancellation = () -> {
+            if (!exitRequested.get() && mcpReconnectRequired.getAndSet(false)) {
+                out.println("Reconnecting interrupted MCP transports..."); out.flush();
+                agentRef.set(buildAgent(ctx, config, terminal, renderer, db, pauseAction));
+            }
+        };
+        InteractiveApproval approvals = new InteractiveApproval(liveTasks, out);
+        renderer.setConfirmationHandler(approvals::ask);
+        reader.getWidgets().put("rex-pause", () -> {
+            if (liveTasks.isRunning()) {
+                renderer.interruptPausing(); pauseAction.run(); liveTasks.pause();
+            } else { reader.getBuffer().clear(); reader.callWidget(LineReader.REDRAW_LINE); }
+            return true;
+        });
+        reader.getWidgets().put("rex-exit", () -> {
+            exitAction.run(); reader.getBuffer().clear(); reader.callWidget(LineReader.ACCEPT_LINE); return true;
+        });
+        var keys = reader.getKeyMaps().get(LineReader.MAIN);
+        keys.bind(new Reference("rex-pause"), "\u001b");
+        keys.bind(new Reference("rex-exit"), "\u0003");
+        keys.setAmbiguousTimeout(150);
+        out.println("Enter: send / add instruction · Esc: interrupt task · Ctrl+C: exit"); out.flush();
+        PendingResume pending = null;
+        while (!exitRequested.get()) {
+            String input;
+            try { input = reader.readLine(renderer.prompt(ctx)); }
+            catch (UserInterruptException e) { exitAction.run(); break; }
+            catch (EndOfFileException e) { exitAction.run(); break; }
+            if (exitRequested.get() || input == null) break;
+            input = input.trim();
+            if (approvals.answer(input)) continue;
+            if (input.isEmpty()) continue;
+            if (input.equals("/exit") || input.equals("/quit")) { exitAction.run(); break; }
+            if (liveTasks.isRunning()) {
+                if (input.startsWith("/")) {
+                    out.println("Task is running. Add an instruction, or press Esc before switching sessions or running commands.");
+                } else if (liveTasks.steer(input)) {
+                    out.println("Instruction added to the current task.");
+                } else {
+                    out.println("Task is stopping or finishing; please send the instruction again when it completes.");
+                }
+                out.flush(); continue;
+            }
+            RegnexeAgent agent = agentRef.get();
+            if (input.startsWith("/")) {
+                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                if (result == SlashResult.EXIT) break;
+                if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
+                    agentRef.set(buildAgent(ctx, config, terminal, renderer, db, pauseAction));
+                } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                    launchInteractiveTask(() -> agent.executeSkill(result.capabilityId, result.args,
+                            ctx.getSessionName(), result.rawInput), agent, ctx, renderer, out, db);
+                }
+                if (result.resumeSelectionChanged) pending = result.pendingResume;
+                continue;
+            }
+            String instruction = input;
+            if (pending != null) {
+                PendingResume selection = pending; pending = null;
+                launchInteractiveTask(() -> {
+                    selection.checkSession(ctx.getSessionId());
+                    return agent.resumeTask(ctx.getSessionName(), selection.taskId(), instruction);
+                }, agent, ctx, renderer, out, db);
+            } else {
+                TaskRequest request = new TaskRequest();
+                request.setGoal(injectWorkspacePreamble(instruction, ctx)); request.setSessionId(ctx.getSessionName());
+                launchInteractiveTask(() -> agent.execute(request), agent, ctx, renderer, out, db);
+            }
+        }
+    }
+
+    private void launchInteractiveTask(Callable<AgentResult> task, RegnexeAgent agent, SessionContext ctx,
+                                       CliRenderer renderer, PrintWriter out, RexDatabase db) {
+        taskPauseRequested.set(false);
+        liveTasks.start(run -> {
+            try (var ignored = ctx.retainExecution()) {
+                try {
+                    run.checkCancelled();
+                    AgentResult result = task.call();
+                    while (!run.finishIfObserved()) {
+                        if (result.getState() == null) {
+                            out.println("The skill finished before its last instruction could be applied; please resend it.");
+                            run.seal(); break;
+                        }
+                        run.persistMessages(result.getState());
+                        result.getState().setStatus(TaskStatus.PAUSED);
+                        if (db != null) new SqliteTaskStore(db).save(result.getState());
+                        result = agent.resumeTask(ctx.getSessionName(), result.getTaskId(), null);
+                    }
+                    if (run.isCancelled()) {
+                        Thread.interrupted();
+                        result.setStatus(TaskStatus.PAUSED);
+                        if (result.getState() != null) result.getState().setStatus(TaskStatus.PAUSED);
+                    }
+                    run.persistMessages(result.getState());
+                    if (db != null && result.getState() != null) new SqliteTaskStore(db).save(result.getState());
+                    if (result.getStatus() == TaskStatus.PAUSED) storePausedTaskSummary(result, db);
+                    handleAgentResult(result, ctx, out, renderer, db);
+                    reconnectAfterCancellation.run();
+                    out.println("[task complete] status=" + result.getStatus()); out.flush();
+                } catch (Exception e) {
+                    if (!run.isCancelled()) throw new java.util.concurrent.CompletionException(e);
+                    Thread.interrupted();
+                    TaskExecutionState state = run.state();
+                    if (state != null) {
+                        run.persistMessages(state); state.setStatus(TaskStatus.PAUSED);
+                        if (db != null) new SqliteTaskStore(db).save(state);
+                        storePausedTaskSummary(AgentResult.builder().taskId(state.getTaskId())
+                                .status(TaskStatus.PAUSED).state(state).build(), db);
+                    }
+                    renderer.paused(ctx.getSessionName());
+                    reconnectAfterCancellation.run();
+                    out.println("[task complete] status=PAUSED"); out.flush();
+                }
+            } catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+        }, error -> {
+            // Expected cancellation is handled above. Persistence/cleanup failures remain errors.
+            renderer.error(describeError(error));
+            out.println("[task complete] status=FAILED"); out.flush();
+        });
     }
 
     private AgentResult runAgentTask(Callable<AgentResult> task,
@@ -808,9 +951,11 @@ public class CliMain implements CommandLineRunner {
         renderer.setApprovalSession(ctx.getSessionId());
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
+        BaseChatModel summarizer = buildSummarizerModel(config);
         var builder = agentBuilder
                 .withDefaultModel(config.getModel().getVendor(), config.effectiveModel(),
                         deepseekThinkingKwargs(config.effectiveModel()))
+                .withLlmProvider(spec -> new InteractiveChatModel(new DefaultModelProvider().provide(spec), liveTasks))
                 .withEventListener(new CliEventListener(renderer))
                 .withEventListener(buildOpikListener(ctx, config))
                 .withMaxRounds(ac.getMaxRounds())
@@ -820,16 +965,16 @@ public class CliMain implements CommandLineRunner {
                 .withSessionCompactPeriod(ac.getSessionCompactPeriod())
                 .withAgentContext(SlidingWindowContext.builder()
                         .windowSize(ac.getContextWindowSize())
-                        .summarizer(buildSummarizerModel(config))
+                        .summarizer(summarizer == null ? null : new InteractiveChatModel(summarizer, liveTasks))
                         .build())
                 .withTool(
-                        FileTools.readFile(workspace),
-                        FileTools.listFiles(workspace),
-                        FileTools.searchFiles(workspace),
-                        FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()),
-                        FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()),
-                        BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction,
-                                taskPauseRequested::get)
+                        liveTasks.guard(FileTools.readFile(workspace), null),
+                        liveTasks.guard(FileTools.listFiles(workspace), null),
+                        liveTasks.guard(FileTools.searchFiles(workspace), null),
+                        liveTasks.guard(FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
+                        liveTasks.guard(FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
+                        liveTasks.guard(BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction,
+                                taskPauseRequested::get), null)
                 );
 
         // Optional per-role model overrides — same vendor as the main model unless
@@ -859,7 +1004,13 @@ public class CliMain implements CommandLineRunner {
         }
         List<Tool> mcpTools = connectMcpServers(workspace, renderer, pauseAction);
         if (!mcpTools.isEmpty()) {
-            builder = builder.withTool(mcpTools.toArray(new Tool[0]));
+            McpClient transport = activeMcpClient;
+            builder = builder.withTool(mcpTools.stream().map(tool -> liveTasks.guard(tool,
+                    () -> {
+                        mcpReconnectRequired.set(true);
+                        Thread cleanup = new Thread(() -> { if (transport != null) transport.destroy(); }, "rex-cancel-mcp");
+                        cleanup.setDaemon(true); cleanup.start();
+                    })).toArray(Tool[]::new));
         }
 
         if (db != null) {
