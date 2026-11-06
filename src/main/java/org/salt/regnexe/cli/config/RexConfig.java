@@ -137,6 +137,7 @@ public class RexConfig {
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class UiConfig {
         private String theme = "codex";
+        private boolean fullscreen = true;
         private String color = "auto";
         private boolean icons = true;
         private boolean compact = true;

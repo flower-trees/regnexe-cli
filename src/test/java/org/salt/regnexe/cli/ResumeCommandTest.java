@@ -139,4 +139,22 @@ public class ResumeCommandTest {
         }
     }
 
+    @Test public void resumeWithoutNamePrintsOnlyNamesInCurrentWorkspace() throws Exception {
+        try (var db = new RexDatabase(temporary.getRoot().toPath().resolve("rex.db"));
+             var alpha = session("alpha"); var beta = session("beta")) {
+            saveSession(db, alpha); saveSession(db, beta);
+            var other = db.findSessionByName("beta").orElseThrow();
+            other.setWorkingDir(temporary.newFolder("another-workspace").getAbsolutePath()); db.upsertSession(other);
+            StringWriter output = new StringWriter();
+            command("/resume", alpha, db, output);
+            assertEquals(java.util.Set.of("alpha"), output.toString().lines().collect(java.util.stream.Collectors.toSet()));
+            StringWriter help = new StringWriter();
+            command("/help", alpha, db, help);
+            assertFalse(help.toString().contains("/sessions"));
+            assertFalse(help.toString().contains("/sessins"));
+            assertFalse(output.toString().contains(alpha.getSessionId()));
+            assertFalse(output.toString().contains("WORKING DIR"));
+        }
+    }
+
 }

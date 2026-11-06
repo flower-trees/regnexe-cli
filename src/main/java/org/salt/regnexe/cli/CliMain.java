@@ -70,10 +70,6 @@ import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
-import java.time.Instant;
-import java.time.LocalDateTime;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -316,11 +312,7 @@ public class CliMain implements CommandLineRunner {
         Path historyFile = Path.of(System.getProperty("user.home"), ".rex", "history");
         Files.createDirectories(historyFile.getParent());
 
-        LineReader reader = LineReaderBuilder.builder()
-                .terminal(terminal)
-                .history(new DefaultHistory())
-                .variable(LineReader.HISTORY_FILE, historyFile)
-                .build();
+        LineReader reader = new DockedLineReader(terminal, Map.of(LineReader.HISTORY_FILE, historyFile));
 
         boolean interactive = System.console() != null && !Terminal.TYPE_DUMB.equals(terminal.getType());
         PrintWriter out = interactive ? new PrintWriter(new AboveLineWriter(reader), true) : terminal.writer();
@@ -363,9 +355,9 @@ public class CliMain implements CommandLineRunner {
         Thread mainThread = Thread.currentThread();
         Runnable pauseAction = () -> {
             taskPauseRequested.set(true);
+            liveTasks.pause();
             RegnexeAgent a = agentRef.get();
             if (a != null) a.pause();
-            liveTasks.pause();
         };
         Runnable exitAction = () -> {
             if (exitRequested.compareAndSet(false, true)) {
@@ -512,8 +504,10 @@ public class CliMain implements CommandLineRunner {
             }
         };
         InteractiveApproval approvals = new InteractiveApproval(liveTasks, out);
+        SessionPicker sessionPicker = new SessionPicker();
         renderer.setConfirmationHandler(approvals::ask);
         reader.getWidgets().put("rex-pause", () -> {
+            if (sessionPicker.cancel()) return true;
             if (liveTasks.isRunning()) {
                 renderer.interruptPausing(); pauseAction.run(); liveTasks.pause();
             } else { reader.getBuffer().clear(); reader.callWidget(LineReader.REDRAW_LINE); }
@@ -526,15 +520,20 @@ public class CliMain implements CommandLineRunner {
         keys.bind(new Reference("rex-pause"), "\u001b");
         keys.bind(new Reference("rex-exit"), "\u0003");
         keys.setAmbiguousTimeout(150);
-        try (var navigation = new ApprovalNavigation(reader, terminal, approvals)) {
+        try (var navigation = new ApprovalNavigation(reader, terminal, approvals, sessionPicker, ThemeConfig.from(config.getUi(), terminal).colorEnabled(), config.getUi().isFullscreen())) {
+            liveTasks.setStateListener(navigation::running);
             out.println("Enter: send / add instruction · Esc: interrupt task · Ctrl+C: exit"); out.flush();
             PendingResume pending = initialResume;
             while (!exitRequested.get()) {
                 String input;
-                try { input = reader.readLine(renderer.prompt(ctx)); }
+                try { input = reader.readLine(navigation.prepareInput(renderer.prompt(ctx),
+                        config.effectiveModel(), ctx.getSessionName(), ctx.getWorkspace().primaryRoot().toString())); }
                 catch (UserInterruptException e) { exitAction.run(); break; }
                 catch (EndOfFileException e) { exitAction.run(); break; }
                 if (exitRequested.get() || input == null) break;
+                String selectedSession = sessionPicker.takeSelection();
+                if (selectedSession != null) input = "/resume " + selectedSession;
+                else sessionPicker.cancel();
                 input = input.trim();
                 if (approvals.answer(input)) continue;
                 if (input.isEmpty()) continue;
@@ -546,6 +545,16 @@ public class CliMain implements CommandLineRunner {
                         out.println("Instruction added to the current task.");
                     } else {
                         out.println("Task is stopping or finishing; please send the instruction again when it completes.");
+                    }
+                    out.flush(); continue;
+                }
+                if (input.equalsIgnoreCase("/resume")) {
+                    if (db == null) renderer.warning("Database unavailable");
+                    else {
+                        try {
+                            List<String> names = db.listSessions(ctx.getWorkspace().primaryRoot()).stream().map(SessionRow::getName).toList();
+                            if (!sessionPicker.open(names, ctx.getSessionName())) out.println("No sessions found in this working directory.");
+                        } catch (SQLException e) { renderer.error(e.getMessage()); }
                     }
                     out.flush(); continue;
                 }
@@ -575,7 +584,7 @@ public class CliMain implements CommandLineRunner {
                     launchInteractiveTask(() -> agent.execute(request), agent, ctx, renderer, out, db);
                 }
             }
-        }
+        } finally { liveTasks.setStateListener(ignored -> {}); }
     }
 
     private void launchInteractiveTask(Callable<AgentResult> task, RegnexeAgent agent, SessionContext ctx,
@@ -796,7 +805,7 @@ public class CliMain implements CommandLineRunner {
         if (turns.isEmpty()) {
             if (!reportEmpty) return;
             out.printf("  No conversation history for session '%s' (never resumed, "
-                    + "or the name is misspelled — check /sessions).%n", targetSession);
+                    + "or the name is misspelled — use /resume).%n", targetSession);
             out.flush();
             return;
         }
@@ -1512,6 +1521,18 @@ public class CliMain implements CommandLineRunner {
         return null;
     }
 
+    private void printSessionNames(SessionContext ctx, RexDatabase db, PrintWriter out) {
+        if (db == null) out.println("  [warn] Database unavailable");
+        else {
+            try {
+                List<SessionRow> sessions = db.listSessions(ctx.getWorkspace().primaryRoot());
+                if (sessions.isEmpty()) out.println("No sessions found in this working directory.");
+                else for (SessionRow row : sessions) out.println(row.getName());
+            } catch (SQLException e) { out.println("  [error] " + e.getMessage()); }
+        }
+        out.flush();
+    }
+
     private SlashResult handleSlashCommand(String raw, PrintWriter out,
                                            RexConfig config, Terminal terminal,
                                            RegnexeAgent agent,
@@ -1527,9 +1548,9 @@ public class CliMain implements CommandLineRunner {
                         Commands:
                           /help              show this help
                           /exit              exit rex
-                          /sessions          list all sessions
-                          /resume <name>     switch to a session (creates if new); if it has an
-                                             unfinished task, load it — your next message continues it
+                          /resume [name]     open a named session, or choose sessions in this directory
+                                             with arrows when no name is given
+                                             unfinished tasks continue on your next message
                           /clear             clear current session's conversation history
                           /history [name]    show a session's conversation history (default: current)
                           /add-dir <path>    add a workspace directory for this session
@@ -1545,39 +1566,6 @@ public class CliMain implements CommandLineRunner {
                                              (declare servers in ~/.rex/mcp.json or <project>/.rex/mcp.json;
                                               a Plugin-carried server has no independent switch — use /plugin instead)
                         """);
-                out.flush();
-            }
-
-            case "/sessions" -> {
-                if (db == null) {
-                    out.println("  [warn] Database unavailable");
-                    out.flush();
-                    return SlashResult.CONTINUE;
-                }
-                try {
-                    List<SessionRow> sessions = db.listSessions();
-                    if (sessions.isEmpty()) {
-                        out.println("  No sessions found.");
-                    } else {
-                        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-                        out.printf("  %-20s  %-36s  %-19s  %s%n", "NAME", "ID", "LAST USED", "WORKING DIR");
-                        out.println("  " + "─".repeat(100));
-                        for (SessionRow row : sessions) {
-                            String lastUsed = LocalDateTime
-                                    .ofInstant(Instant.ofEpochMilli(row.getUpdatedAt()), ZoneId.systemDefault())
-                                    .format(fmt);
-                            String marker = row.getName().equals(ctx.getSessionName()) ? "* " : "  ";
-                            out.printf("%s%-20s  %-36s  %-19s  %s%n",
-                                    marker,
-                                    row.getName(),
-                                    row.getSessionId(),
-                                    lastUsed,
-                                    row.getWorkingDir());
-                        }
-                    }
-                } catch (SQLException e) {
-                    out.println("  [error] " + e.getMessage());
-                }
                 out.flush();
             }
 
@@ -1604,8 +1592,7 @@ public class CliMain implements CommandLineRunner {
             case "/resume" -> {
                 String name = parts.length > 1 ? parts[1].trim() : "";
                 if (name.isEmpty()) {
-                    out.println("  Usage: /resume <name>");
-                    out.flush();
+                    printSessionNames(ctx, db, out);
                     return SlashResult.CONTINUE;
                 }
                 if (db == null) {

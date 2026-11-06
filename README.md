@@ -71,8 +71,7 @@ For per-role models, custom endpoints, workspaces, and Opik, see [configuration 
 | Command | Purpose |
 |---|---|
 | `/help` | Show all interactive commands |
-| `/sessions` | List sessions |
-| `/resume <name>` | Switch sessions; if an unfinished task exists, your next message continues it with additional instructions |
+| `/resume [name]` | Open a named session, or use Up/Down and Enter to select one; unfinished tasks continue on your next message |
 | `/history [name]` | Show conversation history |
 | `/clear` | Clear conversation history for the current session |
 | `/dirs` / `/add-dir <path>` | List or add workspace directories |
@@ -80,6 +79,10 @@ For per-role models, custom endpoints, workspaces, and Opik, see [configuration 
 | `/plugin list` | List plugins and enabled state |
 | `/mcp list` | List MCP servers and tools |
 | `/exit` | Exit |
+
+The picker lists sessions saved for the current workspace directory. Directory aliases resolve to the same location; child directories remain separate workspaces. Use `/resume <name>` to open a session from another directory directly.
+
+Interactive terminals use a full-screen history viewport: mouse wheel, PgUp/PgDn, and the application scrollbar scroll output while input stays fixed between two rules. An activity line shows running/approval/ready state; `model · session · workspace` stays on one line below the input. Set `ui.fullscreen: false` for native terminal scrollback compatibility; configure colors with `ui.color: auto|always|never`.
 
 The starting directory is the default workspace; extend it through configuration or `/add-dir`. File writes and edits request confirmation; shell confirmation is also enabled by default.
 

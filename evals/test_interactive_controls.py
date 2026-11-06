@@ -72,7 +72,7 @@ class InteractiveControlsTest(unittest.TestCase):
             "model": {"vendor": "custom", "name": "local-test", "api_key": "local-test-only",
                       "chat_url": f"http://127.0.0.1:{self.server.server_port}/v1/chat/completions"},
             "agent": {"max_rounds": 2},
-            "ui": {"theme": "minimal", "color": "never", "icons": False},
+            "ui": {"fullscreen": False, "theme": "minimal", "color": "never", "icons": False},
             "opik": {"enabled": False},
             "tools": {"bash": {"require_confirmation": False}, "fs": {"require_confirmation": False}},
         }
@@ -86,7 +86,7 @@ class InteractiveControlsTest(unittest.TestCase):
         self.child.logfile_read = self.log
         try:
             self.child.expect_exact("Enter: send / add instruction")
-            self.child.expect_exact("rex> ")
+            self.child.expect(r"rex>|\x1b\[\d+;6H")
         except Exception as error:
             output = self.child.before
             self.tearDown()
@@ -112,13 +112,127 @@ class InteractiveControlsTest(unittest.TestCase):
         self.server.shutdown(); self.server.server_close()
         self.log.close(); self.temp.cleanup()
 
+    def next_request(self, timeout):
+        # A real terminal continuously consumes output, including per-key dock redraws.
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                return self.requests.get_nowait()
+            except queue.Empty:
+                try:
+                    self.child.read_nonblocking(8192, timeout=0.05)
+                except pexpect.TIMEOUT:
+                    pass
+        raise queue.Empty()
+
+    def test_bottom_input_footer_survives_output_and_resize(self):
+        # Repeated help fills the scroll region without calling a model.
+        for _ in range(4):
+            self.child.sendline("/help")
+            self.child.expect_exact("Commands:", timeout=5)
+            self.child.expect(r"\x1b\[38;6H", timeout=5)
+        self.log.flush()
+        output = (self.root / "terminal.txt").read_text()
+        self.assertIn("local-test", output)
+        self.assertIn("live", output)
+        self.assertNotIn("Directory:", output)
+        self.assertIn(str(self.root.resolve()), output)
+        self.assertTrue("─" * 100 in output or "\x1b(0" + "q" * 100 in output)
+        # The entire four-row dock is outside the output scroll region.
+        self.assertIn("\x1b[38;1H", output)
+        self.assertIn("\x1b[1;35r", output)
+        # Check the resulting screen, rather than only the emitted cursor commands.
+        import pyte
+        screen = pyte.Screen(140, 40)
+        terminal_stream = pyte.Stream(screen)
+        with (self.root / "terminal.txt").open(newline="") as stream:
+            terminal_stream.feed(stream.read())
+        rows = screen.display
+        self.assertIn("rex>", rows[-3])
+        self.assertIn("local-test · live · " + str(self.root.resolve()), rows[-1], "\n".join(rows[-8:]))
+        self.assertTrue(set(rows[-4].strip()) <= {"─", "q"})
+        self.assertTrue(set(rows[-2].strip()) <= {"─", "q"})
+        self.child.setwinsize(30, 100)
+        self.child.sendline("/help")
+        # A resize can repaint the old prompt before the command is dispatched.
+        self.child.expect_exact("Commands:", timeout=5)
+        self.child.expect(r"rex>|\x1b\[\d+;6H", timeout=5)
+        self.log.flush()
+        output = (self.root / "terminal.txt").read_text()
+        self.assertIn("\x1b[28;6H", output)
+        self.assertIn("\x1b[1;25r", output)
+        self.assertTrue(self.requests.empty())
+
+    def test_fullscreen_history_scroll_keeps_draft_status_and_colors(self):
+        import pyte
+        self.child.sendline("/exit"); self.child.expect(pexpect.EOF, timeout=7); self.child.close()
+        path = self.root / "config.yml"
+        config = yaml.safe_load(path.read_text())
+        config["ui"].update(fullscreen=True, color="always")
+        path.write_text(yaml.safe_dump(config))
+        screen = pyte.Screen(140, 40)
+        stream = pyte.Stream(screen)
+        log = self.log
+        class Capture:
+            def write(self, text):
+                log.write(text); stream.feed(text)
+            def flush(self):
+                log.flush()
+        env = dict(os.environ, REX_CONFIG=str(path), TERM="xterm-256color")
+        env.pop("REX_MODEL", None); env.pop("REX_API_KEY", None)
+        self.child = pexpect.spawn("java", ["-Duser.home=" + str(self.root), "-jar", str(JAR), "--session", "live"],
+                                   cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
+        self.child.logfile_read = Capture()
+        def drain(seconds=0.35):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    self.child.read_nonblocking(16384, timeout=0.05)
+                except pexpect.TIMEOUT:
+                    pass
+        self.child.expect_exact("Enter: send / add instruction", timeout=15)
+        drain()
+        for _ in range(4):
+            self.child.sendline("/help"); drain()
+        bottom = screen.display[-4:]
+        latest = screen.display[:35]
+        self.child.send("\x1b[5~"); drain()
+        self.assertNotEqual(latest, screen.display[:35])
+        self.assertEqual(bottom, screen.display[-4:])
+        # Click the application scrollbar at the top, then drag its thumb to the bottom.
+        self.child.send("\x1b[M" + chr(32) + chr(172) + chr(33)); drain()
+        self.assertIn("rex v", "\n".join(screen.display[:35]))
+        self.child.send("\x1b[M" + chr(64) + chr(172) + chr(67)); drain()
+        self.assertEqual(latest, screen.display[:35])
+        self.child.send("\x1b[M" + chr(96) + chr(37) + chr(37)); drain()
+        self.assertNotEqual(latest, screen.display[:35])
+        self.assertEqual(bottom, screen.display[-4:])
+        self.child.send("\x1b[6~"); drain()
+        self.child.sendline("Analyze this project")
+        self.next_request(timeout=10); drain()
+        self.assertIn("Running", screen.display[-5])
+        self.assertEqual("brown", screen.buffer[35][0].fg)  # pyte names ANSI yellow "brown"
+        self.child.send("draft input"); drain()
+        self.assertIn("draft input", screen.display[-3])
+        self.child.send("\x1b[5~"); drain()
+        self.assertIn("draft input", screen.display[-3])
+        self.assertIn("Running", screen.display[-5])
+        self.assertEqual("cyan", screen.buffer[37][0].fg)
+        self.child.send("\x1b")
+        deadline = time.monotonic() + 5
+        while "Ready" not in screen.display[-5] and time.monotonic() < deadline:
+            drain(0.15)
+        self.assertIn("Ready", screen.display[-5])
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            self.assertEqual("PAUSED", db.execute("SELECT status FROM task_execution_states").fetchone()[0])
+
     def test_live_instruction_and_escape_during_stalled_model(self):
         self.child.sendline("Analyze this project")
-        self.requests.get(timeout=10)
+        self.next_request(timeout=10)
         started = time.monotonic()
         self.child.sendline("Focus on task recovery only")
         self.child.expect_exact("Instruction added to the current task.", timeout=3)
-        updated = self.requests.get(timeout=5)
+        updated = self.next_request(timeout=5)
         self.assertIn("Focus on task recovery only", json.dumps(updated))
         self.assertLess(time.monotonic() - started, 5)
         self.child.send("\x1b")
@@ -130,9 +244,9 @@ class InteractiveControlsTest(unittest.TestCase):
         self.assertEqual("PAUSED", rows[0][0])
         self.assertIn("Focus on task recovery only", rows[0][1])
         # With no approval pending, Left remains a normal cursor-editing key.
-        self.child.send("/sessios")
+        self.child.send("/resue")
         self.child.send("\x1b[D")
-        self.child.sendline("n")
+        self.child.sendline("m")
         self.child.expect_exact("live", timeout=3)
 
     def test_escape_stops_shell_and_keeps_partial_output(self):
@@ -141,7 +255,12 @@ class InteractiveControlsTest(unittest.TestCase):
         deadline = time.monotonic() + 12
         marker = self.root / "child.pid"
         while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
+            # Drain the PTY like a real terminal; otherwise its finite output buffer
+            # can block the worker before the shell starts.
+            try:
+                self.child.read_nonblocking(4096, timeout=0.05)
+            except pexpect.TIMEOUT:
+                pass
         self.assertTrue(marker.exists(), "Shell never started")
         started = time.monotonic()
         self.child.send("\x1b")
@@ -192,7 +311,7 @@ class InteractiveControlsTest(unittest.TestCase):
                                    cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
         self.child.logfile_read = self.log
         self.child.expect_exact("Enter: send / add instruction")
-        self.child.expect_exact("rex> ")
+        self.child.expect(r"rex>|\x1b\[\d+;6H")
 
     def test_arrow_menu_default_no_and_session_always(self):
         self.mode = "approval"
@@ -220,7 +339,7 @@ class InteractiveControlsTest(unittest.TestCase):
         self.child.sendline("Use bash to create approved.txt")
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
-            request = self.requests.get(timeout=5)
+            request = self.next_request(timeout=5)
             if request.get("tools"):
                 break
         else:
@@ -237,7 +356,7 @@ class InteractiveControlsTest(unittest.TestCase):
 
     def test_named_startup_replays_history_and_next_input_resumes_same_task(self):
         self.child.sendline("Analyze this project")
-        self.requests.get(timeout=10)
+        self.next_request(timeout=10)
         self.child.send("\x1b")
         self.child.expect_exact("[task complete] status=PAUSED", timeout=5)
         with sqlite3.connect(self.root / ".rex/rex.db") as db:
@@ -254,10 +373,10 @@ class InteractiveControlsTest(unittest.TestCase):
         self.assertNotIn("human:", replayed)
         self.child.expect_exact("Found an unfinished task", timeout=5)
         self.child.expect_exact("Enter: send / add instruction")
-        self.child.expect_exact("rex> ")
+        self.child.expect(r"rex>|\x1b\[\d+;6H")
         self.assertTrue(self.requests.empty(), "Opening a session must not invoke the model")
         self.child.sendline("Continue with startup supplement")
-        request = self.requests.get(timeout=10)
+        request = self.next_request(timeout=10)
         self.assertIn("Analyze this project", json.dumps(request))
         self.assertIn("Continue with startup supplement", json.dumps(request))
         self.child.send("\x1b")
@@ -266,9 +385,61 @@ class InteractiveControlsTest(unittest.TestCase):
             tasks = db.execute("SELECT task_id FROM task_execution_states").fetchall()
         self.assertEqual([(original,)], tasks)
 
+    def test_session_picker_opens_selected_session_with_saved_history(self):
+        import uuid
+        session_id, turn_id = str(uuid.uuid4()), str(uuid.uuid4())
+        foreign_root = self.root / "other-workspace"
+        foreign_root.mkdir()
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            db.execute("INSERT INTO sessions VALUES (?, 'demo', ?, '', 1, 1)", (session_id, str(self.root)))
+            db.execute("INSERT INTO sessions VALUES (?, 'foreign-session', ?, '', 1, 1)",
+                       (str(uuid.uuid4()), str(foreign_root)))
+            turn = {"id": turn_id, "type": "NORMAL", "created_at": 1, "messages": [
+                {"role": "human", "content": "Saved demo request"},
+                {"role": "ai", "content": "Saved demo response"}]}
+            db.execute("INSERT INTO conversation_turns VALUES (?,0,0,'demo',1,?)", (turn_id, json.dumps(turn)))
+        self.child.sendline("/resume")
+        self.child.expect_exact("↑/↓ select · Enter open · Esc cancel", timeout=3)
+        self.assertIn("live", self.child.before)
+        self.assertIn("demo", self.child.before)
+        self.assertNotIn(session_id, self.child.before)
+        self.assertNotIn("foreign-session", self.child.before)
+        self.child.send("\x1b[B")  # The current live session is initially selected.
+        self.child.sendline("")
+        self.child.expect_exact("Opened session: demo", timeout=5)
+        self.child.expect_exact("rex> Saved demo request", timeout=3)
+        self.child.expect_exact("Saved demo response", timeout=3)
+        self.child.expect(r"rex>|\x1b\[\d+;6H")
+        self.assertTrue(self.requests.empty(), "Session selection must not invoke the model")
+        self.child.sendline("/resume")
+        self.child.expect_exact("↑/↓ select · Enter open · Esc cancel", timeout=3)
+        self.child.send("\x1b[A")
+        self.child.send("\x1b")  # Cancel without switching away from demo.
+        self.child.sendline("")  # A cancelled menu must not open the highlighted live session.
+        self.child.sendline("/resume demo")
+        self.child.expect_exact("Saved demo response", timeout=3)
+        self.assertNotIn("Opened session:", self.child.before)
+        for removed in ("/sessions", "/sessins"):
+            self.child.sendline(removed)
+            self.child.expect_exact("Unknown command: " + removed, timeout=3)
+            self.assertNotIn("↑/↓ select", self.child.before)
+        self.assertTrue(self.requests.empty())
+
+        # Explicit names still allow opening a different project; its picker uses that root.
+        self.child.sendline("/resume foreign-session")
+        self.child.expect_exact("Opened session: foreign-session", timeout=5)
+        self.child.expect(r"rex>|\x1b\[\d+;6H")
+        self.child.sendline("/resume")
+        self.child.expect_exact("↑/↓ select · Enter open · Esc cancel", timeout=3)
+        self.assertIn("foreign-session", self.child.before)
+        self.assertNotIn("  demo", self.child.before)
+        self.assertNotIn("  live", self.child.before)
+        self.child.send("\x1b")
+        self.assertTrue(self.requests.empty())
+
     def test_control_c_exits_during_stalled_model(self):
         self.child.sendline("Analyze this project")
-        self.requests.get(timeout=10)
+        self.next_request(timeout=10)
         started = time.monotonic()
         self.child.sendcontrol("c")
         self.child.expect(pexpect.EOF, timeout=7)

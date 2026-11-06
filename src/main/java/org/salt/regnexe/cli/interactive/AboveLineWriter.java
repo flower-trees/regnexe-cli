@@ -10,7 +10,7 @@ public final class AboveLineWriter extends Writer {
     public AboveLineWriter(LineReader reader) { this.reader = reader; }
     @Override public synchronized void write(char[] chars, int offset, int length) { buffer.append(chars, offset, length); }
     @Override public synchronized void flush() {
-        if (!buffer.isEmpty()) { String text = buffer.toString(); buffer.setLength(0); reader.printAbove(text.stripTrailing()); }
+        if (!buffer.isEmpty()) { String text = buffer.toString(); buffer.setLength(0); reader.printAbove(text); }
     }
     @Override public void close() { flush(); }
 }

@@ -28,13 +28,24 @@ public class TerminalCliRendererHistoryTest {
                 var savedRenderer = new TerminalCliRenderer(null, config, new PrintWriter(saved));
                 liveRenderer.assistantMessage(answer);
                 savedRenderer.sessionHistory(context, List.of(turn));
-                assertEquals(savedRenderer.prompt(context) + question + System.lineSeparator() + live, saved.toString());
+                assertEquals(System.lineSeparator() + savedRenderer.prompt(context) + question + System.lineSeparator().repeat(2) + live, saved.toString());
                 assertFalse(saved.toString().contains("NORMAL"));
                 assertFalse(saved.toString().contains("human:"));
                 assertFalse(saved.toString().contains("truncated"));
                 assertTrue(saved.toString().contains("    int value = 1;"));
             }
         }
+    }
+
+    @Test public void questionHeadingAndCodeAreColoredWhenEnabled() {
+        var output = new StringWriter();
+        var renderer = new TerminalCliRenderer(null,
+                new ThemeConfig(CliTheme.CODEX, ColorMode.ALWAYS, true, true, true), new PrintWriter(output));
+        assertTrue(renderer.prompt(context).contains("\u001b[36m"));
+        renderer.assistantMessage("## Result\nCreated `test.txt`.");
+        assertTrue(output.toString().contains("\u001b[34;1m## Result"));
+        assertTrue(output.toString().contains("\u001b[36m`test.txt`"));
+        assertTrue(output.toString().endsWith(System.lineSeparator().repeat(2)));
     }
 
     @Test public void compactedHistoryIsIdentifiedAsSummaryRatherThanInventedDialogue() {

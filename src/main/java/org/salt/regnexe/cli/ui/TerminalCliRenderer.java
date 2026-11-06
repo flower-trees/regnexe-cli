@@ -91,14 +91,20 @@ public class TerminalCliRenderer implements CliRenderer {
     @Override
     public String prompt(SessionContext ctx) {
         if (theme.theme() == CliTheme.CODEX) {
-            return theme.icons() ? "› " : "> ";
+            return cyan(theme.icons() ? "› " : "> ");
         }
-        return "rex> ";
+        return cyan("rex> ");
     }
 
     @Override
     public void assistantMessage(String text) {
-        if (text != null && !text.isBlank()) out.println(text);
+        if (text != null && !text.isBlank()) {
+            for (String line : text.split("\n", -1)) {
+                if (theme.colorEnabled() && line.matches("^#{1,6} .+")) out.println(Ansi.BLUE + line + Ansi.RESET);
+                else out.println(theme.colorEnabled() ? line.replaceAll("`([^`]+)`", Ansi.CYAN + "`$1`" + Ansi.RESET) : line);
+            }
+            out.println();
+        }
         out.flush();
     }
 
@@ -114,7 +120,9 @@ public class TerminalCliRenderer implements CliRenderer {
                 String content = message.getContent();
                 if (content == null || content.isBlank()) continue;
                 if ("human".equals(message.getRole()) || "user".equals(message.getRole())) {
+                    out.println();
                     out.println(prompt(ctx) + content);
+                    out.println();
                 } else if ("tool".equals(message.getRole())) {
                     toolResult(content);
                 } else {
@@ -636,6 +644,8 @@ public class TerminalCliRenderer implements CliRenderer {
         }
         return t;
     }
+
+    private String cyan(String text) { return theme.colorEnabled() ? Ansi.CYAN + text + Ansi.RESET : text; }
 
     private String dim(String text) {
         return theme.colorEnabled() ? Ansi.DIM + text + Ansi.RESET : text;

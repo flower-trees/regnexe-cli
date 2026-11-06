@@ -14,13 +14,16 @@ public final class InteractiveTaskRunner implements AutoCloseable {
         Thread thread = new Thread(r, "rex-agent-worker"); thread.setDaemon(true); return thread;
     });
     private volatile Run active;
+    private volatile Consumer<Boolean> stateListener = ignored -> {};
+    public void setStateListener(Consumer<Boolean> listener) { stateListener = listener; }
 
     public synchronized boolean start(Consumer<Run> task, Consumer<Throwable> errors) {
         if (active != null) return false;
         Run run = new Run(); active = run;
+        stateListener.accept(true);
         worker.execute(() -> {
             try { task.accept(run); } catch (Throwable e) { errors.accept(e); }
-            finally { synchronized (this) { active = null; notifyAll(); } Thread.interrupted(); }
+            finally { synchronized (this) { active = null; notifyAll(); } Thread.interrupted(); stateListener.accept(false); }
         });
         return true;
     }

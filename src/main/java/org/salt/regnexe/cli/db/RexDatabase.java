@@ -186,6 +186,22 @@ public class RexDatabase implements AutoCloseable {
         return result;
     }
 
+    /** Project-local session listing. Compare actual directory identities, never path prefixes. */
+    public List<SessionRow> listSessions(Path workingDirectory) throws SQLException {
+        Path current = canonicalDirectory(workingDirectory);
+        return listSessions().stream().filter(row -> {
+            String stored = row.getWorkingDir();
+            if (stored == null || stored.isBlank()) return false;
+            try { return current.equals(canonicalDirectory(Path.of(stored))); }
+            catch (java.nio.file.InvalidPathException e) { return false; }
+        }).toList();
+    }
+
+    private static Path canonicalDirectory(Path path) {
+        try { return path.toRealPath(); }
+        catch (java.io.IOException e) { return path.toAbsolutePath().normalize(); }
+    }
+
     /** Deletes all conversation turns for the given session name. */
     public void clearConversation(String sessionName) throws SQLException {
         String sql = "DELETE FROM conversation_turns WHERE app_id=0 AND user_id=0 AND session_id=?";
