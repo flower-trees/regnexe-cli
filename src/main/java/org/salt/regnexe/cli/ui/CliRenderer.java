@@ -6,6 +6,9 @@ import org.salt.regnexe.cli.session.SessionContext;
 public interface CliRenderer {
     void startup(String version, SessionContext ctx, RexConfig config, String missingApiKeyEnv);
     String prompt(SessionContext ctx);
+    /** Shared answer rendering for live task results and saved conversation messages. */
+    void assistantMessage(String text);
+    void sessionHistory(SessionContext ctx, java.util.List<org.salt.jlangchain.core.history.HistoryInfos> turns);
     void thinking();
     void ready();
     void executing();

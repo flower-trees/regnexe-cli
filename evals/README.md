@@ -114,6 +114,6 @@ mvn package
 evals/.venv/bin/python -m unittest discover -s evals -p test_interactive_controls.py -v
 ```
 
-这 5 项测试使用真实 PTY 和本地模拟模型 HTTP 服务，无需 Key 或 Opik：验证模型等待时补充输入、补充指令改变同一任务的工具动作、Esc 取消模型/Shell/确认等待以及 Ctrl+C 退出。模拟服务测试用于确定性交互回归，不代替官方模型评测。
+这 7 项测试使用真实 PTY 和本地模拟模型 HTTP 服务，无需 Key 或 Opik：验证模型等待时补充输入、补充指令改变同一任务的工具动作、Esc 取消模型/Shell/确认等待、Ctrl+C 退出，以及四方向键授权选择、默认拒绝、always 保留与输入草稿保留，以及命名会话重启后展示历史并继续同一任务。模拟服务测试用于确定性交互回归，不代替官方模型评测。
 
-真实终端现在始终接收输入，运行中普通输入补充到当前任务；Esc 暂停，Ctrl+C 退出。确认等待时输入 yes/no/always/pause。管道输入仍按原先逐条执行，避免批量用例的多轮输入被误作同一任务补充。原 `interactive-ctrl-c` 用例 ID 保留作历史对比，其步骤已改为 Esc 暂停并增加 Ctrl+C 退出验收。
+真实终端现在始终接收输入，运行中普通输入补充到当前任务；Esc 暂停，Ctrl+C 退出。确认等待时可用上下或左右方向键选择、Enter 确认（默认 no），也兼容输入 yes/no/always/pause。管道输入仍按原先逐条执行，避免批量用例的多轮输入被误作同一任务补充。原 `interactive-ctrl-c` 用例 ID 保留作历史对比，其步骤已改为 Esc 暂停并增加 Ctrl+C 退出验收。

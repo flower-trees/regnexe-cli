@@ -97,6 +97,35 @@ public class TerminalCliRenderer implements CliRenderer {
     }
 
     @Override
+    public void assistantMessage(String text) {
+        if (text != null && !text.isBlank()) out.println(text);
+        out.flush();
+    }
+
+    @Override
+    public void sessionHistory(SessionContext ctx, List<org.salt.jlangchain.core.history.HistoryInfos> turns) {
+        for (var turn : turns) {
+            if (turn.getMessages() == null) continue;
+            if (turn.getType() == org.salt.jlangchain.core.history.HistoryInfos.Type.SUMMARY
+                    || turn.getType() == org.salt.jlangchain.core.history.HistoryInfos.Type.TASK_SUMMARY) {
+                out.println(dim("Earlier conversation summary"));
+            }
+            for (var message : turn.getMessages()) {
+                String content = message.getContent();
+                if (content == null || content.isBlank()) continue;
+                if ("human".equals(message.getRole()) || "user".equals(message.getRole())) {
+                    out.println(prompt(ctx) + content);
+                } else if ("tool".equals(message.getRole())) {
+                    toolResult(content);
+                } else {
+                    assistantMessage(content);
+                }
+            }
+        }
+        out.flush();
+    }
+
+    @Override
     public void thinking() {
         out.print(theme.theme() == CliTheme.CODEX
                 ? (theme.icons() ? "⟳ thinking" : "thinking")

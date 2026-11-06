@@ -396,11 +396,12 @@ public class CliMain implements CommandLineRunner {
 
             // The open session remains locked while idle. /resume binds a task ID;
             // execution reloads that task from storage before continuing.
-            PendingResume pendingResume = null;
+            PendingResume pendingResume = sessionArg != null && !sessionArg.isBlank()
+                    ? restoreOpenedSession(ctx, db, out, renderer) : null;
 
             if (interactive) {
                 runInteractiveRepl(reader, renderer, out, config, terminal, ctx, db, agentRef,
-                        exitRequested, pauseAction, exitAction);
+                        exitRequested, pauseAction, exitAction, pendingResume);
             } else {
                 while (!exitRequested.get()) {
                     String input;
@@ -417,7 +418,7 @@ public class CliMain implements CommandLineRunner {
                     if (input.isEmpty()) continue;
 
                     if (input.startsWith("/")) {
-                        SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
+                        SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db, renderer);
                         if (result == SlashResult.EXIT) break;
                         if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
                             // ctx was mutated in-place by handleSlashCommand (/resume)
@@ -503,7 +504,7 @@ public class CliMain implements CommandLineRunner {
     private void runInteractiveRepl(LineReader reader, TerminalCliRenderer renderer, PrintWriter out,
                                     RexConfig config, Terminal terminal, SessionContext ctx, RexDatabase db,
                                     AtomicReference<RegnexeAgent> agentRef, AtomicBoolean exitRequested,
-                                    Runnable pauseAction, Runnable exitAction) throws Exception {
+                                    Runnable pauseAction, Runnable exitAction, PendingResume initialResume) throws Exception {
         reconnectAfterCancellation = () -> {
             if (!exitRequested.get() && mcpReconnectRequired.getAndSet(false)) {
                 out.println("Reconnecting interrupted MCP transports..."); out.flush();
@@ -525,52 +526,54 @@ public class CliMain implements CommandLineRunner {
         keys.bind(new Reference("rex-pause"), "\u001b");
         keys.bind(new Reference("rex-exit"), "\u0003");
         keys.setAmbiguousTimeout(150);
-        out.println("Enter: send / add instruction · Esc: interrupt task · Ctrl+C: exit"); out.flush();
-        PendingResume pending = null;
-        while (!exitRequested.get()) {
-            String input;
-            try { input = reader.readLine(renderer.prompt(ctx)); }
-            catch (UserInterruptException e) { exitAction.run(); break; }
-            catch (EndOfFileException e) { exitAction.run(); break; }
-            if (exitRequested.get() || input == null) break;
-            input = input.trim();
-            if (approvals.answer(input)) continue;
-            if (input.isEmpty()) continue;
-            if (input.equals("/exit") || input.equals("/quit")) { exitAction.run(); break; }
-            if (liveTasks.isRunning()) {
+        try (var navigation = new ApprovalNavigation(reader, terminal, approvals)) {
+            out.println("Enter: send / add instruction · Esc: interrupt task · Ctrl+C: exit"); out.flush();
+            PendingResume pending = initialResume;
+            while (!exitRequested.get()) {
+                String input;
+                try { input = reader.readLine(renderer.prompt(ctx)); }
+                catch (UserInterruptException e) { exitAction.run(); break; }
+                catch (EndOfFileException e) { exitAction.run(); break; }
+                if (exitRequested.get() || input == null) break;
+                input = input.trim();
+                if (approvals.answer(input)) continue;
+                if (input.isEmpty()) continue;
+                if (input.equals("/exit") || input.equals("/quit")) { exitAction.run(); break; }
+                if (liveTasks.isRunning()) {
+                    if (input.startsWith("/")) {
+                        out.println("Task is running. Add an instruction, or press Esc before switching sessions or running commands.");
+                    } else if (liveTasks.steer(input)) {
+                        out.println("Instruction added to the current task.");
+                    } else {
+                        out.println("Task is stopping or finishing; please send the instruction again when it completes.");
+                    }
+                    out.flush(); continue;
+                }
+                RegnexeAgent agent = agentRef.get();
                 if (input.startsWith("/")) {
-                    out.println("Task is running. Add an instruction, or press Esc before switching sessions or running commands.");
-                } else if (liveTasks.steer(input)) {
-                    out.println("Instruction added to the current task.");
+                    SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db, renderer);
+                    if (result == SlashResult.EXIT) break;
+                    if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
+                        agentRef.set(buildAgent(ctx, config, terminal, renderer, db, pauseAction));
+                    } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
+                        launchInteractiveTask(() -> agent.executeSkill(result.capabilityId, result.args,
+                                ctx.getSessionName(), result.rawInput), agent, ctx, renderer, out, db);
+                    }
+                    if (result.resumeSelectionChanged) pending = result.pendingResume;
+                    continue;
+                }
+                String instruction = input;
+                if (pending != null) {
+                    PendingResume selection = pending; pending = null;
+                    launchInteractiveTask(() -> {
+                        selection.checkSession(ctx.getSessionId());
+                        return agent.resumeTask(ctx.getSessionName(), selection.taskId(), instruction);
+                    }, agent, ctx, renderer, out, db);
                 } else {
-                    out.println("Task is stopping or finishing; please send the instruction again when it completes.");
+                    TaskRequest request = new TaskRequest();
+                    request.setGoal(injectWorkspacePreamble(instruction, ctx)); request.setSessionId(ctx.getSessionName());
+                    launchInteractiveTask(() -> agent.execute(request), agent, ctx, renderer, out, db);
                 }
-                out.flush(); continue;
-            }
-            RegnexeAgent agent = agentRef.get();
-            if (input.startsWith("/")) {
-                SlashResult result = handleSlashCommand(input, out, config, terminal, agent, ctx, db);
-                if (result == SlashResult.EXIT) break;
-                if (result.kind == SlashResult.Kind.AGENT_REBUILT) {
-                    agentRef.set(buildAgent(ctx, config, terminal, renderer, db, pauseAction));
-                } else if (result.kind == SlashResult.Kind.RUN_SKILL) {
-                    launchInteractiveTask(() -> agent.executeSkill(result.capabilityId, result.args,
-                            ctx.getSessionName(), result.rawInput), agent, ctx, renderer, out, db);
-                }
-                if (result.resumeSelectionChanged) pending = result.pendingResume;
-                continue;
-            }
-            String instruction = input;
-            if (pending != null) {
-                PendingResume selection = pending; pending = null;
-                launchInteractiveTask(() -> {
-                    selection.checkSession(ctx.getSessionId());
-                    return agent.resumeTask(ctx.getSessionName(), selection.taskId(), instruction);
-                }, agent, ctx, renderer, out, db);
-            } else {
-                TaskRequest request = new TaskRequest();
-                request.setGoal(injectWorkspacePreamble(instruction, ctx)); request.setSessionId(ctx.getSessionName());
-                launchInteractiveTask(() -> agent.execute(request), agent, ctx, renderer, out, db);
             }
         }
     }
@@ -720,10 +723,7 @@ public class CliMain implements CommandLineRunner {
                                    CliRenderer renderer, RexDatabase db) {
         // TASK_TOKEN_SUMMARY fires via listener just before execute()/resume() returns.
         // Print the clean final answer after the token summary line.
-        String answer = result.getFinalText();
-        if (answer != null && !answer.isBlank()) {
-            out.println(answer);
-        }
+        renderer.assistantMessage(result.getFinalText());
         if (result.getStatus() == TaskStatus.PAUSED) {
             renderer.paused(ctx.getSessionName());
         }
@@ -765,7 +765,44 @@ public class CliMain implements CommandLineRunner {
         }
     }
 
-    /** Prints a resumable task's status/round/reason/partial-result before /resume hands it off. */
+    /** Shared by --session startup and /resume, after acquiring the session lock. */
+    private PendingResume restoreOpenedSession(SessionContext ctx, RexDatabase db, PrintWriter out, CliRenderer renderer) {
+        if (db == null) return null;
+        printSessionHistory(ctx.getSessionName(), ctx, db, out, false, renderer);
+        try {
+            List<TaskExecutionState> resumable = new SqliteTaskStore(db).listResumable(ctx.getSessionName());
+            if (!resumable.isEmpty()) {
+                TaskExecutionState state = resumable.stream()
+                        .max(Comparator.comparingLong(TaskExecutionState::getUpdatedAt)).orElseThrow();
+                printResumableTaskSummary(state, out);
+                return new PendingResume(ctx.getSessionId(), state.getTaskId());
+            }
+        } catch (Exception e) {
+            out.println("  [warn] Could not check for a resumable task: " + e.getMessage());
+        } finally { out.flush(); }
+        return null;
+    }
+
+    private void printSessionHistory(String targetSession, SessionContext ctx, RexDatabase db,
+                                     PrintWriter out, boolean reportEmpty, CliRenderer renderer) {
+        java.util.List<org.salt.jlangchain.core.history.HistoryInfos> turns;
+        try {
+            turns = db.loadConversation(targetSession);
+        } catch (Exception e) {
+            out.println("  [error] " + e.getMessage());
+            out.flush();
+            return;
+        }
+        if (turns.isEmpty()) {
+            if (!reportEmpty) return;
+            out.printf("  No conversation history for session '%s' (never resumed, "
+                    + "or the name is misspelled — check /sessions).%n", targetSession);
+            out.flush();
+            return;
+        }
+        renderer.sessionHistory(ctx, turns);
+    }
+
     private void printResumableTaskSummary(TaskExecutionState state, PrintWriter out) {
         out.println("  Found an unfinished task in this session:");
         out.printf("    Status : %s%n", state.getStatus());
@@ -1478,7 +1515,7 @@ public class CliMain implements CommandLineRunner {
     private SlashResult handleSlashCommand(String raw, PrintWriter out,
                                            RexConfig config, Terminal terminal,
                                            RegnexeAgent agent,
-                                           SessionContext ctx, RexDatabase db) {
+                                           SessionContext ctx, RexDatabase db, CliRenderer renderer) {
         String[] parts = raw.split("\\s+", 2);
         String cmd = parts[0].toLowerCase();
 
@@ -1594,21 +1631,7 @@ public class CliMain implements CommandLineRunner {
                     return SlashResult.CONTINUE;
                 }
 
-                PendingResume pendingResume = null;
-                try {
-                    List<TaskExecutionState> resumable = new SqliteTaskStore(db).listResumable(name);
-                    if (!resumable.isEmpty()) {
-                        TaskExecutionState state = resumable.stream()
-                                .max(Comparator.comparingLong(TaskExecutionState::getUpdatedAt))
-                                .orElseThrow();
-                        printResumableTaskSummary(state, out);
-                        pendingResume = new PendingResume(ctx.getSessionId(), state.getTaskId());
-                    }
-                } catch (Exception e) {
-                    out.println("  [warn] Could not check for a resumable task: " + e.getMessage());
-                }
-                out.flush();
-                return SlashResult.resumed(switching, pendingResume);
+                return SlashResult.resumed(switching, restoreOpenedSession(ctx, db, out, renderer));
             }
 
             case "/clear" -> {
@@ -1634,41 +1657,7 @@ public class CliMain implements CommandLineRunner {
                 }
                 String targetSession = parts.length > 1 && !parts[1].isBlank()
                         ? parts[1].trim() : ctx.getSessionName();
-                java.util.List<org.salt.jlangchain.core.history.HistoryInfos> turns;
-                try {
-                    turns = db.loadConversation(targetSession);
-                } catch (Exception e) {
-                    out.println("  [error] " + e.getMessage());
-                    out.flush();
-                    return SlashResult.CONTINUE;
-                }
-                if (turns.isEmpty()) {
-                    out.printf("  No conversation history for session '%s' (never resumed, "
-                            + "or the name is misspelled — check /sessions).%n", targetSession);
-                    out.flush();
-                    return SlashResult.CONTINUE;
-                }
-                DateTimeFormatter histFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-                out.printf("  === %s (%d turn%s) ===%n", targetSession, turns.size(),
-                        turns.size() == 1 ? "" : "s");
-                for (org.salt.jlangchain.core.history.HistoryInfos turn : turns) {
-                    String when = LocalDateTime
-                            .ofInstant(Instant.ofEpochMilli(turn.getCreatedAt()), ZoneId.systemDefault())
-                            .format(histFmt);
-                    out.printf("  [%s] %s%n", when, turn.getType());
-                    if (turn.getMessages() != null) {
-                        for (org.salt.jlangchain.core.message.BaseMessage msg : turn.getMessages()) {
-                            String content = msg.getContent() != null ? msg.getContent() : "";
-                            if (content.length() > 2000) {
-                                content = content.substring(0, 2000) + "... [truncated, "
-                                        + content.length() + " chars total]";
-                            }
-                            out.printf("    %-10s %s%n", msg.getRole() + ":", content.replace("\n", "\n               "));
-                        }
-                    }
-                    out.println();
-                }
-                out.flush();
+                printSessionHistory(targetSession, ctx, db, out, true, renderer);
             }
 
             case "/dirs" -> {

@@ -16,7 +16,7 @@ from prepare_hardening import load_suite
 
 ROOT = Path(__file__).resolve().parent
 PROMPT = "rex> "
-CONFIRM = r"(?:Apply|Run|Call)\? \[y/N/pause/always \(this session\)\]"
+CONFIRM = r"(?:Apply|Run|Call)\? \[no\]"
 
 
 def process_table():
@@ -69,6 +69,7 @@ class App:
                                  cwd=str(self.workdir), env=env, encoding="utf-8",
                                  timeout=150, dimensions=(40, 140))
         self.child.logfile_read = self.log
+        self.child.expect_exact("Enter: send / add instruction")
         self.child.expect_exact(PROMPT)
 
     def slash(self, command, expected=None):

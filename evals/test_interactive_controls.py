@@ -85,6 +85,7 @@ class InteractiveControlsTest(unittest.TestCase):
                                    cwd=str(self.root), env=env, encoding="utf-8", timeout=25, dimensions=(40, 140))
         self.child.logfile_read = self.log
         try:
+            self.child.expect_exact("Enter: send / add instruction")
             self.child.expect_exact("rex> ")
         except Exception as error:
             output = self.child.before
@@ -128,7 +129,10 @@ class InteractiveControlsTest(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual("PAUSED", rows[0][0])
         self.assertIn("Focus on task recovery only", rows[0][1])
-        self.child.sendline("/sessions")
+        # With no approval pending, Left remains a normal cursor-editing key.
+        self.child.send("/sessios")
+        self.child.send("\x1b[D")
+        self.child.sendline("n")
         self.child.expect_exact("live", timeout=3)
 
     def test_escape_stops_shell_and_keeps_partial_output(self):
@@ -153,6 +157,29 @@ class InteractiveControlsTest(unittest.TestCase):
 
     def test_confirmation_answer_and_escape_share_one_input_reader(self):
         self.mode = "approval"
+        self.restart_with_confirmation()
+        self.child.sendline("Use bash to create approved.txt")
+        self.child.expect_exact("Run? [no]", timeout=12)
+        self.assertNotIn("[y/N/pause/always", self.child.before)
+        # Preserve an unfinished input draft while Right + Enter approves the tool.
+        self.child.send("draft instruction")
+        self.child.send("\x1b[C")
+        self.child.sendline("")
+        self.child.expect_exact("[task complete] status=FINISHED", timeout=12)
+        self.assertEqual("approved", (self.root / "approved.txt").read_text())
+        # Enter again submits the draft that survived menu navigation and task completion.
+        self.child.sendline("")
+        self.child.expect_exact("Run? [no]", timeout=12)
+        self.child.send("\x1b")
+        self.child.expect_exact("[task complete] status=PAUSED", timeout=5)
+        self.assertTrue(self.child.isalive())
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            rows = db.execute("SELECT data FROM task_execution_states ORDER BY updated_at").fetchall()
+        self.assertEqual(2, len(rows))
+        self.assertNotIn("draft instruction", rows[0][0])
+        self.assertIn("draft instruction", rows[1][0])
+
+    def restart_with_confirmation(self):
         # Apply new confirmation settings by exiting, then restart the same isolated session.
         self.child.sendline("/exit"); self.child.expect(pexpect.EOF, timeout=7)
         path = self.root / "config.yml"
@@ -164,17 +191,29 @@ class InteractiveControlsTest(unittest.TestCase):
         self.child = pexpect.spawn("java", ["-Duser.home=" + str(self.root), "-jar", str(JAR), "--session", "live"],
                                    cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
         self.child.logfile_read = self.log
+        self.child.expect_exact("Enter: send / add instruction")
         self.child.expect_exact("rex> ")
+
+    def test_arrow_menu_default_no_and_session_always(self):
+        self.mode = "approval"
+        self.restart_with_confirmation()
         self.child.sendline("Use bash to create approved.txt")
-        self.child.expect_exact("[y/N/pause/always (this session)]", timeout=12)
-        self.child.sendline("yes")
+        self.child.expect_exact("Run? [no]", timeout=12)
+        self.child.sendline("")  # Enter alone rejects; default must never grant access.
+        self.child.expect_exact("[task complete] status=FINISHED", timeout=12)
+        self.assertFalse((self.root / "approved.txt").exists())
+        self.child.sendline("Use bash to create approved.txt")
+        self.child.expect_exact("Run? [no]", timeout=12)
+        # no -> pause -> no -> yes -> always -> yes -> always, using all directions.
+        for key in ["\x1b[A", "\x1b[B", "\x1b[B", "\x1b[B", "\x1b[D", "\x1b[C"]:
+            self.child.send(key)
+        self.child.sendline("")
         self.child.expect_exact("[task complete] status=FINISHED", timeout=12)
         self.assertEqual("approved", (self.root / "approved.txt").read_text())
         self.child.sendline("Use bash to create approved.txt again")
-        self.child.expect_exact("[y/N/pause/always (this session)]", timeout=12)
-        self.child.send("\x1b")
-        self.child.expect_exact("[task complete] status=PAUSED", timeout=5)
-        self.assertTrue(self.child.isalive())
+        outcome = self.child.expect_exact(["[task complete] status=FINISHED",
+                                           "Run? [no]"], timeout=12)
+        self.assertEqual(0, outcome, "Session always approval was not retained")
 
     def test_steering_changes_the_tool_action_in_the_same_task(self):
         self.mode = "steer"
@@ -195,6 +234,37 @@ class InteractiveControlsTest(unittest.TestCase):
             rows = db.execute("SELECT data FROM task_execution_states").fetchall()
         self.assertEqual(1, len(rows))
         self.assertIn("Write corrected.txt instead", rows[0][0])
+
+    def test_named_startup_replays_history_and_next_input_resumes_same_task(self):
+        self.child.sendline("Analyze this project")
+        self.requests.get(timeout=10)
+        self.child.send("\x1b")
+        self.child.expect_exact("[task complete] status=PAUSED", timeout=5)
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            original = db.execute("SELECT task_id FROM task_execution_states").fetchone()[0]
+        self.child.sendline("/exit"); self.child.expect(pexpect.EOF, timeout=7); self.child.close()
+        env = dict(os.environ, REX_CONFIG=str(self.root / "config.yml"), TERM="xterm-256color")
+        env.pop("REX_MODEL", None); env.pop("REX_API_KEY", None)
+        self.child = pexpect.spawn("java", ["-Duser.home=" + str(self.root), "-jar", str(JAR), "--session", "live"],
+                                   cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
+        self.child.logfile_read = self.log
+        self.child.expect_exact("rex> Analyze this project", timeout=10)
+        replayed = self.child.before
+        self.assertNotIn("NORMAL", replayed)
+        self.assertNotIn("human:", replayed)
+        self.child.expect_exact("Found an unfinished task", timeout=5)
+        self.child.expect_exact("Enter: send / add instruction")
+        self.child.expect_exact("rex> ")
+        self.assertTrue(self.requests.empty(), "Opening a session must not invoke the model")
+        self.child.sendline("Continue with startup supplement")
+        request = self.requests.get(timeout=10)
+        self.assertIn("Analyze this project", json.dumps(request))
+        self.assertIn("Continue with startup supplement", json.dumps(request))
+        self.child.send("\x1b")
+        self.child.expect_exact("[task complete] status=PAUSED", timeout=5)
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            tasks = db.execute("SELECT task_id FROM task_execution_states").fetchall()
+        self.assertEqual([(original,)], tasks)
 
     def test_control_c_exits_during_stalled_model(self):
         self.child.sendline("Analyze this project")
