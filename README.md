@@ -78,11 +78,12 @@ For per-role models, custom endpoints, workspaces, and Opik, see [configuration 
 | `/skills` / `/<skill name> [args]` | List or directly invoke a skill |
 | `/plugin list` | List plugins and enabled state |
 | `/mcp list` | List MCP servers and tools |
+| `/mouse on` / `/mouse off` | Enable app selection/scrolling or use native terminal selection |
 | `/exit` | Exit |
 
 The picker lists sessions saved for the current workspace directory. Directory aliases resolve to the same location; child directories remain separate workspaces. Use `/resume <name>` to open a session from another directory directly.
 
-Interactive terminals use a full-screen history viewport: mouse wheel, PgUp/PgDn, and the application scrollbar scroll output while input stays fixed between two rules. An activity line shows running/approval/ready state; `model · session · workspace` stays on one line below the input. Set `ui.fullscreen: false` for native terminal scrollback compatibility; configure colors with `ui.color: auto|always|never`.
+Interactive terminals use a full-screen history viewport: drag text to select and highlight it, then release to copy automatically. Mouse-wheel scrolling, the application scrollbar, and PgUp/PgDn keep input fixed between two rules. Use Alt+C to retry copying a retained selection; `/mouse off` falls back to native terminal selection. An activity line shows running/approval/ready state; `model · session · workspace` stays on one line below the input. Set `ui.fullscreen: false` for native terminal scrollback compatibility; configure colors with `ui.color: auto|always|never`.
 
 The starting directory is the default workspace; extend it through configuration or `/add-dir`. File writes and edits request confirmation; shell confirmation is also enabled by default.
 

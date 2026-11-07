@@ -138,6 +138,7 @@ public class RexConfig {
     public static class UiConfig {
         private String theme = "codex";
         private boolean fullscreen = true;
+        private boolean mouse = true;
         private String color = "auto";
         private boolean icons = true;
         private boolean compact = true;

@@ -520,7 +520,7 @@ public class CliMain implements CommandLineRunner {
         keys.bind(new Reference("rex-pause"), "\u001b");
         keys.bind(new Reference("rex-exit"), "\u0003");
         keys.setAmbiguousTimeout(150);
-        try (var navigation = new ApprovalNavigation(reader, terminal, approvals, sessionPicker, ThemeConfig.from(config.getUi(), terminal).colorEnabled(), config.getUi().isFullscreen())) {
+        try (var navigation = new ApprovalNavigation(reader, terminal, approvals, sessionPicker, ThemeConfig.from(config.getUi(), terminal).colorEnabled(), config.getUi().isFullscreen(), config.getUi().isMouse())) {
             liveTasks.setStateListener(navigation::running);
             out.println("Enter: send / add instruction · Esc: interrupt task · Ctrl+C: exit"); out.flush();
             PendingResume pending = initialResume;
@@ -538,6 +538,16 @@ public class CliMain implements CommandLineRunner {
                 if (approvals.answer(input)) continue;
                 if (input.isEmpty()) continue;
                 if (input.equals("/exit") || input.equals("/quit")) { exitAction.run(); break; }
+                if (input.equals("/mouse") || input.startsWith("/mouse ")) {
+                    String mode = input.substring(6).trim().toLowerCase(java.util.Locale.ROOT);
+                    if (mode.equals("on") || mode.equals("off")) {
+                        navigation.mouse(mode.equals("on"));
+                        out.println(navigation.mouseEnabled()
+                                ? "Mouse selection enabled: drag to select, release to copy; wheel scrolls history."
+                                : "Direct text selection enabled; use PgUp/PgDn to scroll history.");
+                    } else out.println("Mouse scrolling: " + (navigation.mouseEnabled() ? "on" : "off") + "; usage: /mouse on|off");
+                    out.flush(); continue;
+                }
                 if (liveTasks.isRunning()) {
                     if (input.startsWith("/")) {
                         out.println("Task is running. Add an instruction, or press Esc before switching sessions or running commands.");

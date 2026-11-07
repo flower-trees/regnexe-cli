@@ -173,8 +173,10 @@ class InteractiveControlsTest(unittest.TestCase):
         screen = pyte.Screen(140, 40)
         stream = pyte.Stream(screen)
         log = self.log
+        received = []
         class Capture:
             def write(self, text):
+                received.append(text)
                 log.write(text); stream.feed(text)
             def flush(self):
                 log.flush()
@@ -192,6 +194,9 @@ class InteractiveControlsTest(unittest.TestCase):
                     pass
         self.child.expect_exact("Enter: send / add instruction", timeout=15)
         drain()
+        # Application selection and scrolling now share the default mouse mode.
+        self.assertIn("\x1b[?1002h", "".join(received))
+        self.assertIn("drag to select, release to copy", screen.display[-5])
         for _ in range(4):
             self.child.sendline("/help"); drain()
         bottom = screen.display[-4:]
@@ -225,6 +230,105 @@ class InteractiveControlsTest(unittest.TestCase):
         self.assertIn("Ready", screen.display[-5])
         with sqlite3.connect(self.root / ".rex/rex.db") as db:
             self.assertEqual("PAUSED", db.execute("SELECT status FROM task_execution_states").fetchone()[0])
+        self.child.send("\x1b")  # clear the retained draft before entering a UI command
+        drain()
+        self.child.sendline("/mouse off"); drain()
+        self.assertIn("drag to select/copy", screen.display[-5])
+        start = len(received)
+        self.child.sendline("/help"); drain()
+        subsequent = "".join(received[start:])
+        self.assertNotRegex(subsequent, r"\x1b\[\?(?:1000|1002|1003|1006)h")
+        before = screen.display[:35]
+        self.child.send("\x1b[5~"); drain()
+        self.assertNotEqual(before, screen.display[:35])
+
+    def test_application_selection_copies_utf8_and_preserves_draft(self):
+        import base64
+        import pyte
+        import re
+        import uuid
+        self.child.sendline("/exit"); self.child.expect(pexpect.EOF, timeout=7); self.child.close()
+        path = self.root / "config.yml"
+        config = yaml.safe_load(path.read_text())
+        config["ui"].update(fullscreen=True, color="always")
+        path.write_text(yaml.safe_dump(config))
+        turn_id = str(uuid.uuid4())
+        first = "SELECT: 中文e\u0301😀 copied"
+        second = "second line without decoration"
+        turn = {"id": turn_id, "type": "NORMAL", "created_at": 1, "messages": [
+            {"role": "human", "content": "Selection fixture"},
+            {"role": "ai", "content": first + "\n" + second + "\n" + "wrap-" * 40}]}
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            db.execute("INSERT INTO conversation_turns VALUES (?,0,0,'live',1,?)", (turn_id, json.dumps(turn)))
+        fake_bin = self.root / "clipboard-bin"; fake_bin.mkdir()
+        destination = self.root / "copied.txt"
+        fail_marker = self.root / "clipboard-fail"
+        script = '#!/bin/sh\nif [ -f "$REX_CLIPBOARD_FAIL" ]; then exit 1; fi\n/bin/cat > "$REX_TEST_CLIPBOARD"\n'
+        # All platform backends are synthetic; this test never modifies the OS clipboard.
+        for name in ("pbcopy", "wl-copy", "xclip", "xsel", "powershell.exe"):
+            command = fake_bin / name; command.write_text(script); command.chmod(0o755)
+        screen = pyte.Screen(140, 40); stream = pyte.Stream(screen)
+        received = []; log = self.log
+        class Capture:
+            def write(self, text):
+                received.append(text); log.write(text); stream.feed(text)
+            def flush(self):
+                log.flush()
+        env = dict(os.environ, REX_CONFIG=str(path), TERM="xterm-256color",
+                   PATH=str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
+                   REX_TEST_CLIPBOARD=str(destination), REX_CLIPBOARD_FAIL=str(fail_marker))
+        for name in ("REX_MODEL", "REX_API_KEY", "SSH_CONNECTION", "SSH_TTY"):
+            env.pop(name, None)
+        self.child = pexpect.spawn("java", ["-Duser.home=" + str(self.root), "-jar", str(JAR), "--session", "live"],
+                                   cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
+        self.child.logfile_read = Capture()
+        def drain(seconds=0.25):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    self.child.read_nonblocking(16384, timeout=0.05)
+                except pexpect.TIMEOUT:
+                    pass
+        def mouse(code, x, y, release=False):
+            self.child.send(f"\x1b[<{code};{x + 1};{y + 1}" + ("m" if release else "M"))
+            drain()
+        def copied(expected):
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                drain(0.1)
+                if destination.exists() and destination.read_text() == expected:
+                    return
+            self.fail("Synthetic clipboard did not receive the exact selected text")
+        self.child.expect_exact("Enter: send / add instruction", timeout=15); drain()
+        self.child.send("retained draft"); drain()
+        y = next(i for i, row in enumerate(screen.display[:35]) if "SELECT:" in row)
+        mouse(0, 8, y); mouse(0, 8, y, release=True)
+        self.assertFalse(destination.exists(), "A click without dragging must not overwrite the clipboard")
+        mouse(0, 8, y); mouse(32, 14, y)
+        self.assertTrue(screen.buffer[y][8].reverse, "Selected Chinese text must be visibly highlighted")
+        self.assertIn("retained draft", screen.display[-3])
+        mouse(0, 14, y, release=True)
+        copied("中文e\u0301😀")
+        self.assertNotIn("\x1b", destination.read_text())
+        self.assertIn("Copied", screen.display[-5])
+        mouse(0, 0, y); mouse(32, 4, y + 1); mouse(0, 4, y + 1, release=True)
+        expected = first + "\nsecon"
+        copied(expected)
+        screen.resize(lines=30, columns=90)
+        self.child.setwinsize(30, 90); drain(0.5)
+        self.assertIn("retained draft", screen.display[-3])
+        self.assertTrue(any(cell.reverse for row in screen.buffer.values() for cell in row.values()))
+        # Retry a retained selection with a failed native backend: OSC 52 remains honest
+        # about terminal permissions and contains exactly the original selected text.
+        fail_marker.touch()
+        self.child.send("\x1bc"); drain(0.6)
+        matches = re.findall(r"\x1b\]52;c;([A-Za-z0-9+/=]*)\x07", "".join(received))
+        self.assertTrue(matches)
+        self.assertEqual(expected, base64.b64decode(matches[-1]).decode("utf-8"))
+        self.assertIn("Copy sent via OSC 52", screen.display[-5])
+        self.assertIn("retained draft", screen.display[-3])
+        self.assertTrue(self.requests.empty(), "Selection and copying must never call the model")
+        self.child.sendcontrol("c"); self.child.expect(pexpect.EOF, timeout=7)
 
     def test_live_instruction_and_escape_during_stalled_model(self):
         self.child.sendline("Analyze this project")

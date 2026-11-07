@@ -17,7 +17,13 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
     private final boolean color;
     private final boolean fullscreen;
     private boolean running;
+    private boolean mouseEnabled;
     private boolean closed;
+    private final ClipboardSupport clipboard = new ClipboardSupport();
+    private long selectionVersion;
+    private String copyFeedback = "";
+    private String lastInput = "";
+    private boolean scrollbarDragging;
     private List<AttributedString> inputLines = List.of(new AttributedString(""));
     private int inputCursor;
     private int inputStride = 1;
@@ -33,8 +39,8 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
     private SessionPicker.Menu sessionMenu;
     private final Map<String, Binding> originals = new LinkedHashMap<>();
     private final List<String> widgets = new ArrayList<>();
-    public ApprovalNavigation(LineReader reader, Terminal terminal, InteractiveApproval approvals, SessionPicker sessions, boolean color, boolean fullscreen) {
-        this.reader = reader; this.approvals = approvals; this.terminal = terminal; this.sessions = sessions; this.color = color; this.fullscreen = fullscreen;
+    public ApprovalNavigation(LineReader reader, Terminal terminal, InteractiveApproval approvals, SessionPicker sessions, boolean color, boolean fullscreen, boolean mouseEnabled) {
+        this.reader = reader; this.approvals = approvals; this.terminal = terminal; this.sessions = sessions; this.color = color; this.fullscreen = fullscreen; this.mouseEnabled = fullscreen && mouseEnabled;
         refreshSize();
         boolean canShowStatus = terminal.getSize().getRows() > 0 && terminal.getSize().getColumns() > 0
                 && Arrays.stream(new InfoCmp.Capability[]{InfoCmp.Capability.change_scroll_region,
@@ -46,7 +52,8 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
                 terminal.puts(InfoCmp.Capability.enter_ca_mode);
                 terminal.puts(InfoCmp.Capability.clear_screen);
             }
-            if (fullscreen) docked.setOpt(LineReader.Option.MOUSE);
+            if (this.mouseEnabled) docked.setOpt(LineReader.Option.MOUSE);
+            else { docked.unsetOpt(LineReader.Option.MOUSE); terminal.trackMouse(Terminal.MouseTracking.Off); }
             docked.setDock(this);
         }
         approvals.setView(menu -> { synchronized (this) { approvalMenu = menu; render(); } });
@@ -68,19 +75,87 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
         String mouseName = "rex-history-mouse"; widgets.add(mouseName);
         reader.getWidgets().put(mouseName, () -> {
             MouseEvent event = reader.readMouseEvent();
-            synchronized (this) {
-                int height = Math.max(1, rows - status.size());
-                if (event.getY() < height) {
-                    if (event.getButton() == MouseEvent.Button.WheelUp) transcript.scroll(3, height);
-                    else if (event.getButton() == MouseEvent.Button.WheelDown) transcript.scroll(-3, height);
-                    else if (event.getButton() == MouseEvent.Button.Button1 && event.getX() >= columns - 2)
-                        transcript.seek(event.getY(), height);
-                    paintHistory(); paintInput();
-                }
-            }
+            synchronized (this) { handleMouse(event); }
             return true;
         });
-        if (status != null && fullscreen) mouse.bind(new Reference(mouseName), "\u001b[M");
+        if (status != null && fullscreen) {
+            mouse.bind(new Reference(mouseName), "\u001b[M");
+            if (reader instanceof DockedLineReader docked) {
+                String sgrName = mouseName + "-sgr"; widgets.add(sgrName);
+                originals.put("\u001b[<", mouse.getBound("\u001b[<"));
+                reader.getWidgets().put(sgrName, () -> {
+                    MouseEvent event = docked.readSgrMouse();
+                    if (event != null) synchronized (this) { handleMouse(event); }
+                    return true;
+                });
+                mouse.bind(new Reference(sgrName), "\u001b[<");
+            }
+        }
+        bindCopy("\u001bc");
+        bindCopy("\u001b[99;6u");
+    }
+
+    private void handleMouse(MouseEvent event) {
+        if (status == null || !mouseEnabled) return;
+        int height = Math.max(1, rows - status.size());
+        int x = Math.max(0, Math.min(columns - 3, event.getX()));
+        int y = Math.max(0, Math.min(height - 1, event.getY()));
+        if (event.getType() == MouseEvent.Type.Wheel && event.getY() < height) {
+            transcript.scroll(event.getButton() == MouseEvent.Button.WheelUp ? 3 : -3, height);
+        } else if (event.getType() == MouseEvent.Type.Pressed && event.getButton() == MouseEvent.Button.Button1) {
+            if (event.getY() >= height) return;
+            scrollbarDragging = event.getX() >= columns - 2;
+            if (scrollbarDragging) transcript.seek(y, height);
+            else {
+                selectionVersion++; copyFeedback = "";
+                transcript.beginSelection(x, y);
+            }
+        } else if (event.getType() == MouseEvent.Type.Dragged && event.getButton() == MouseEvent.Button.Button1) {
+            if (scrollbarDragging) transcript.seek(y, height);
+            else if (transcript.isDragging()) {
+                if (event.getY() < 0 || event.getY() >= height) {
+                    transcript.scroll(event.getY() < 0 ? 1 : -1, height);
+                    paintHistory();
+                }
+                transcript.extendSelection(x, y);
+            }
+        } else if (event.getType() == MouseEvent.Type.Released) {
+            if (transcript.isDragging()) {
+                String text = transcript.finishSelection(x, y);
+                if (!text.isEmpty()) copy(text);
+            }
+            scrollbarDragging = false;
+        }
+        render();
+    }
+
+    private void copy(String text) {
+        long version = selectionVersion;
+        copyFeedback = "Copying selection…";
+        clipboard.copy(text, result -> {
+            synchronized (this) {
+                if (closed || selectionVersion != version) return;
+                if (!result.terminalSequence().isEmpty()) terminal.writer().print(result.terminalSequence());
+                copyFeedback = result.message();
+                render();
+            }
+        });
+    }
+
+    private void bindCopy(String sequence) {
+        var keys = reader.getKeyMaps().get(LineReader.MAIN);
+        Binding original = keys.getBound(sequence);
+        originals.put(sequence, original);
+        String name = "rex-copy-selection-" + widgets.size(); widgets.add(name);
+        reader.getWidgets().put(name, () -> {
+            synchronized (this) {
+                if (transcript.hasSelection()) { copy(transcript.selectedText()); render(); return true; }
+            }
+            if (original instanceof Reference reference) reader.callWidget(reference.name());
+            else if (original instanceof Macro macro) reader.runMacro(macro.getSequence());
+            return true;
+        });
+        keys.bind(new Reference(name), sequence);
     }
 
     private void bindScroll(String sequence, int direction) {
@@ -98,6 +173,23 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
         keys.bind(new Reference(name), sequence);
     }
 
+    public synchronized boolean mouseEnabled() { return mouseEnabled; }
+
+    public synchronized void mouse(boolean enabled) {
+        selectionVersion++; transcript.clearSelection(); copyFeedback = "";
+        mouseEnabled = status != null && fullscreen && enabled;
+        if (mouseEnabled) {
+            reader.setOpt(LineReader.Option.MOUSE);
+            terminal.trackMouse(Terminal.MouseTracking.Button);
+            terminal.writer().print("\u001b[?1006h");
+        } else {
+            reader.unsetOpt(LineReader.Option.MOUSE);
+            terminal.trackMouse(Terminal.MouseTracking.Off);
+            terminal.writer().print("\u001b[?1006l");
+        }
+        render();
+    }
+
     public synchronized void running(boolean value) { running = value; render(); }
 
     /** Refresh metadata and anchor the next editable prompt above the reserved footer. */
@@ -111,10 +203,14 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
 
     @Override public synchronized void input(List<AttributedString> lines, int cursor, int stride) {
         refreshSize();
+        String currentInput = reader.getBuffer().toString();
+        boolean clear = !currentInput.equals(lastInput) && transcript.hasSelection();
+        lastInput = currentInput;
+        if (clear) { transcript.clearSelection(); selectionVersion++; copyFeedback = ""; }
         inputLines = lines.isEmpty() ? List.of(new AttributedString("")) : List.copyOf(lines);
         inputCursor = Math.max(0, cursor); inputStride = Math.max(1, stride);
         int count = Math.min(Math.max(1, Math.min(5, rows - 8)), inputLines.size());
-        if (count != reservedInput || layoutWidth != columns || layoutHeight != rows) render();
+        if (clear || count != reservedInput || layoutWidth != columns || layoutHeight != rows) render();
         else paintInput();
     }
 
@@ -135,14 +231,16 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
     private void paintHistory() {
         if (!fullscreen) return;
         int height = Math.max(1, rows - status.size());
-        var visible = transcript.view(Math.max(1, columns - 2), height);
+        var visible = transcript.view(Math.max(1, columns - (mouseEnabled ? 2 : 1)), height);
         int thumb = transcript.thumb(height);
         for (int i = 0; i < height; i++) {
             terminal.puts(InfoCmp.Capability.cursor_address, i, 0);
             terminal.writer().print(visible.get(i).toAnsi(terminal));
             terminal.puts(InfoCmp.Capability.clr_eol);
-            terminal.puts(InfoCmp.Capability.cursor_address, i, Math.max(0, columns - 1));
-            terminal.writer().print(i == thumb ? "█" : "│");
+            if (mouseEnabled) {
+                terminal.puts(InfoCmp.Capability.cursor_address, i, Math.max(0, columns - 1));
+                terminal.writer().print(i == thumb ? "█" : "│");
+            }
         }
     }
 
@@ -160,7 +258,10 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
         if (status != null) {
             String activity = approvalMenu != null ? "Waiting for approval · arrows select · Enter confirm"
                     : running ? "● Running · Enter adds instruction · Esc interrupts"
-                    : "○ Ready · PgUp/PgDn or mouse wheel scroll history";
+                    : mouseEnabled ? "○ Ready · drag to select, release to copy · wheel/PgUp/PgDn scroll"
+                    : "○ Ready · drag to select/copy · PgUp/PgDn scroll · /mouse on enables wheel";
+            if (!copyFeedback.isEmpty()) activity = (approvalMenu != null ? "Waiting for approval" : running ? "● Running" : "○ Ready") + " · " + copyFeedback;
+            else if (transcript.hasSelection()) activity += " · Alt+C copies selection again";
             if (transcript.isScrolled()) activity += " · viewing earlier output";
             lines.add(styled(activity, running || approvalMenu != null ? AttributedStyle.YELLOW : AttributedStyle.GREEN));
             lines.add(rule());
@@ -265,12 +366,14 @@ public final class ApprovalNavigation implements AutoCloseable, DockedLineReader
     }
     @Override public synchronized void close() {
         closed = true;
+        clipboard.close();
         approvals.setView(null);
         sessions.setView(menu -> {});
         sessions.cancel();
         if (reader instanceof DockedLineReader docked) docked.setDock(null);
         if (status != null) {
             status.update(List.of()); terminal.trackMouse(Terminal.MouseTracking.Off);
+            terminal.writer().print("\u001b[?1006l");
             reader.unsetOpt(LineReader.Option.MOUSE);
             if (fullscreen) terminal.puts(InfoCmp.Capability.exit_ca_mode); terminal.flush();
         }
