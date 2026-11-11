@@ -1,0 +1,73 @@
+{
+  "stage": "P02",
+  "recorded_at": "2026-11-10T03:59:09.011549+00:00",
+  "status": "passed",
+  "cli_jar_sha256": "49526f0cbf002e6e6831850c6520c1d94b5fba42ad35d84c7a67ef362b975532",
+  "business": {
+    "python": "<CLI_ROOT>/target/skill-eval-week1/business-venv/bin/python3",
+    "prefix": "<CLI_ROOT>/target/skill-eval-week1/business-venv",
+    "python_version": "3.11.9",
+    "cwd": "<CLI_ROOT>/target/skill-eval-week1/p02-20261110-path/workspace",
+    "utf8": "中文😀",
+    "db_module": "<CLI_ROOT>/target/skill-eval-week1/p02-20261110-path/workspace/lib/db.py",
+    "packages": {
+      "PyMySQL": "1.2.4",
+      "python-dotenv": "1.2.4"
+    },
+    "database_connections": 0
+  },
+  "health": {
+    "status": 200,
+    "body": "healthy\n"
+  },
+  "checks": [
+    {
+      "result": "Exit: 0\n────────────────────────────────────────\n{\"python\": \"<CLI_ROOT>/target/skill-eval-week1/business-venv/bin/python3\", \"prefix\": \"<CLI_ROOT>/target/skill-eval-week1/business-venv\", \"python_version\": \"3.11.9\", \"cwd\": \"<CLI_ROOT>/target/skill-eval-week1/p02-20261110-path/workspace\", \"utf8\": \"中文😀\", \"db_module\": \"<CLI_ROOT>/target/skill-eval-week1/p02-20261110-path/workspace/lib/db.py\", \"packages\": {\"PyMySQL\": \"1.2.4\", \"python-dotenv\": \"1.2.4\"}, \"database_connections\": 0}\n",
+      "check": "cwd_utf8_imports",
+      "passed": true,
+      "elapsed_ms": 156
+    },
+    {
+      "result": "Exit: 7\n────────────────────────────────────────\ncontrolled stderr marker\n",
+      "check": "nonzero_stderr",
+      "passed": true,
+      "elapsed_ms": 34
+    },
+    {
+      "result": "Exit: 0\n────────────────────────────────────────\n00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\n[... command produced more than 128 chars; even the saved copy was cut off there ...]",
+      "check": "bounded_capture",
+      "passed": true,
+      "elapsed_ms": 32
+    },
+    {
+      "result": "Error: timed out after 0.25s",
+      "check": "deadline",
+      "passed": true,
+      "elapsed_ms": 759
+    }
+  ],
+  "db_source_sha256": "f06cf4c21142e7ccbdcfd46ec0deeb6f645c8fe23e770dcbeb5ae0805d39d72c",
+  "business_lock_sha256": "75d3cc337273c8c44a0215097fe295a56d53c5b39b388d6a6e8e0a597096c7c5",
+  "probe_java_sha256": "355f4d1813dfef64fc8192246d84f84183b2d76a77439cbc49f4cc992c36f22a",
+  "probe_python_sha256": "7d4fe1e5de052a5ad480c4f1a3bc1df00050708c04fbf375f07571a276e848b8",
+  "opik": {
+    "main_project_exists": true,
+    "project": "regnexe-skill-preflight",
+    "trace_id": "01a1c39c-0b27-754b-acc7-4cf8451b70e0",
+    "task_id": "4c314e1e-0dd0-4869-84e1-6e107f468b64",
+    "session_name": "preflight-p02-4c314e1e",
+    "session_id": "bf44ada9-890c-4e42-8ed2-11f9d5585b76",
+    "tool_spans": 4,
+    "total_spans": 6,
+    "kind": "preflight only, not evaluation scores"
+  },
+  "model_calls": 0,
+  "business_db_connections": 0,
+  "mcp_connections": 0,
+  "uploads": 0,
+  "limitations": [
+    "Imports are not database connectivity or schema verification (P03/P10).",
+    "Shell checks use the packaged backend directly, not Agent selection or approval UI.",
+    "Opik received one synthetic-wrapper trace of actual controlled commands; no experiments, datasets or scores."
+  ]
+}

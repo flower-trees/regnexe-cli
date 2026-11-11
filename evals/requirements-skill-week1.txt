@@ -1,0 +1,3 @@
+# Minimal business interpreter for week 1. Runner/Opik stays in evals/.venv.
+PyMySQL==1.2.4
+python-dotenv==1.2.4

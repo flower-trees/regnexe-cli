@@ -117,3 +117,30 @@ evals/.venv/bin/python -m unittest discover -s evals -p test_interactive_control
 这 11 项测试使用真实 PTY 和本地模拟模型 HTTP 服务，无需 Key 或 Opik：验证模型等待时补充输入、补充指令改变同一任务的工具动作、Esc 取消模型/Shell/确认等待、Ctrl+C 退出，以及四方向键授权选择、默认拒绝、always 保留与输入草稿保留，以及命名会话重启后展示历史并继续同一任务、会话名称列表的方向键选择与取消、当前工作目录筛选及按名称跨目录打开后的列表范围，以及底部输入的上下横线、单行元数据、连续输出后的屏幕位置和终端缩放（使用 pyte 校验最终屏幕），以及全屏模式的滚轮、滚动条点击/拖动、翻页、草稿固定、活动状态与颜色，以及默认应用内选区、运行时 /mouse on/off 切换和关闭后的键盘翻页。兼容模式用例继续覆盖既有控制；全屏用例单独启用 fullscreen 与颜色，新增选区用例通过 PATH 中的假剪贴板工具验证中文/emoji/组合字符、跨行原文、松开自动复制、单击不复制、缩放后选区与草稿保留、Alt+C 重试和 OSC 52 解码内容。所有剪贴板写入都落到临时文件，不更改系统剪贴板，也不请求真实模型。模拟服务测试用于确定性交互回归，不代替官方模型评测。
 
 真实终端现在始终接收输入，运行中普通输入补充到当前任务；Esc 暂停，Ctrl+C 退出。确认等待时可用上下或左右方向键选择、Enter 确认（默认 no），也兼容输入 yes/no/always/pause。管道输入仍按原先逐条执行，避免批量用例的多轮输入被误作同一任务补充。原 `interactive-ctrl-c` 用例 ID 保留作历史对比，其步骤已改为 Esc 暂停并增加 Ctrl+C 退出验收。
+
+
+## Skill 首周 P00 / P01：无模型基线与加载检查
+
+```bash
+mvn -o -DskipTests package
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/prepare_skill_week1.py
+```
+
+默认读取相邻 salt-robot-skills 的 `.claude/skills`，用本次独立配置、home、workspace 与 enabled.yml，通过真实 JAR 内的 CLI 目录解析和 Skill 注册/启用逻辑生成清单。不调用 CLI main 或 Agent build，不连接 MCP，不执行工具或模型。`evals/skill-week1-inventory.yml` 仅用于 P00/P01，不是可以直接运行业务任务的评测配置，轮次设置也不是 P06 已验证的硬预算。
+
+原始结果放在 `target/skill-eval-week1/<UTC时间>/`；[2026-11-09 快照](baselines/skill-week1-2026-11-09/README.md)保留版本/产物摘要和逐项加载结果。可用 `--skills-root`、`--jar`、`--output` 指定来源；输出目录必须新建或为空。此清单不等于数据集得分，不代表 Skill 已被模型正确选择或业务依赖已经就绪。
+
+
+## Skill 首周 P02：最小环境检查（无模型）
+
+先完成 P00/P01 并保留其原始 runtime 目录，再执行：
+
+```bash
+python3 -m venv target/skill-eval-week1/business-venv
+target/skill-eval-week1/business-venv/bin/python -m pip install -r evals/requirements-skill-week1.txt
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/check_skill_environment.py
+```
+
+默认使用本次 P00 的 `target/skill-eval-week1/20261109T132544Z`；换基线时通过 `--baseline` 指定，JAR 哈希不一致会停止。可用 `--business-python` 指定业务 venv 解释器，`--output` 指定新的证据目录。Runner 需要已有 Opik SDK，本机 Opik 必须可用；脚本会向 `regnexe-skill-preflight` 写入有标记的前置 Trace 并回读，不调用模型或业务数据库，不生成业务得分。
+
+子进程私有 PATH 用来验证裸 `python3`，不会修改系统环境。真实 `lib/db.py` 复制到无 `.env` 的隔离工作区，导入时守卫连接入口；不等于测试库已准备好。此入口直接检查打包 Shell 后端，不能代替完整 Agent 运行或授权 UI 测试。[2026-11-10 快照](baselines/skill-week1-2026-11-10/README.md)记录结果与验证范围。
