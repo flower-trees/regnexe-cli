@@ -63,7 +63,7 @@ def snapshot(args):
         'config': {'path': str(args.config.resolve().relative_to(ROOT)), 'sha256': sha(args.config.read_bytes()),
                    'scope': args.scope},
         'evaluation': files_digest(ROOT, ['evals/*.py', 'evals/java/*.java', 'evals/requirements*.txt',
-                                          'evals/fixtures/skill-week1/*']),
+                                          'evals/fixtures/skill-week1/*', 'evals/skill-week1-*.yml']),
         'runner_python': python_environment(ROOT/'evals/.venv/bin/python'),
         'business_python': python_environment(ROOT/'target/skill-eval-week1/business-venv/bin/python'),
     }

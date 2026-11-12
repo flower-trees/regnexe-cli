@@ -163,3 +163,14 @@ PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -
 ## P05 共享执行链验证
 
 [post-P05 清单与结果](baselines/skill-week1-post-p05/README.md)记录指定 Skill 转普通任务后的构建与测试证据。Agent 使用 `mvn -o -Plocal-tests test`，其中 RequiredSkillExecutionTest 使用内存固定响应模型检查完整任务链、恢复和工具范围，不调用官方模型。CLI 用 `mvn -o verify` 集成新快照。正式测评仍等待 P06 预算验收，勿将这些工程测试算作业务任务成功率。
+
+
+## P06 预算与失败分类
+
+[预算配置、计数定义、分类及验证结果](baselines/skill-week1-post-p06/README.md)记录本轮无真实模型证据。[skill-week1-budget.yml](skill-week1-budget.yml)只是供后续单例配置合并的片段，不是完整 REX_CONFIG。任务停止原因、工具观察结果与 Runner 进程失败分开看，不能仅凭退出码 0 或 FINISHED 判业务成功。
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_process.py -v
+```
+
+skill_process.run_bounded 提供进程组截止时间和部分输出，不自动重跑；旧通用 Runner 保持原状，P07 单例入口尚需接入。正式模型配置和业务评分尚未运行。Token 阈值为观察项，不能称为硬限制。

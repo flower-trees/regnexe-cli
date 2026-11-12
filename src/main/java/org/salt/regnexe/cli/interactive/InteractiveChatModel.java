@@ -13,11 +13,23 @@ import org.salt.regnexe.agent.core.task.worker.ContextBusKeys;
 import java.util.*;
 
 /** Decorates synchronous models with live user messages and targeted HTTP cancellation. */
-public final class InteractiveChatModel extends BaseChatModel {
+public final class InteractiveChatModel extends BaseChatModel implements org.salt.regnexe.agent.core.task.worker.TaskBudgetAwareModel {
     private record RequestScope(InteractiveTaskRunner.Run run, int revision, List<AutoCloseable> registrations) {}
     private static final ThreadLocal<RequestScope> REQUEST = new ThreadLocal<>();
     private final BaseChatModel delegate;
     private final InteractiveTaskRunner runner;
+    private TaskExecutionState budgetState;
+    private String budgetPhase;
+    @Override public BaseChatModel withTaskBudget(TaskExecutionState state, String phase) {
+        var copy = new InteractiveChatModel(configuredDelegate(), runner);
+        copy.budgetState = state; copy.budgetPhase = phase; return copy;
+    }
+    private BaseChatModel meteredDelegate() {
+        TaskExecutionState state = budgetState != null ? budgetState
+                : org.salt.regnexe.agent.core.task.worker.BudgetedChatModel.currentTask();
+        return org.salt.regnexe.agent.core.task.worker.BudgetedChatModel.wrap(configuredDelegate(), state,
+                budgetPhase == null ? "summary" : budgetPhase);
+    }
     public InteractiveChatModel(BaseChatModel delegate, InteractiveTaskRunner runner) {
         this.delegate = delegate; this.runner = runner;
         setVendor(delegate.getVendor()); setModel(delegate.getModel());
@@ -34,7 +46,7 @@ public final class InteractiveChatModel extends BaseChatModel {
     }
     @Override public AIMessage invoke(Object input) {
         var run = runner.current();
-        if (run == null) return configuredDelegate().invoke(input);
+        if (run == null) return meteredDelegate().invoke(input);
         while (true) {
             run.checkCancelled();
             int revision = run.revision();
@@ -49,7 +61,7 @@ public final class InteractiveChatModel extends BaseChatModel {
             RequestScope scope = new RequestScope(run, revision, new ArrayList<>());
             REQUEST.set(scope);
             try {
-                AIMessage answer = configuredDelegate().invoke(prompt);
+                AIMessage answer = meteredDelegate().invoke(prompt);
                 run.checkCancelled();
                 if (run.revision() != revision) continue;
                 run.observed(revision);
@@ -78,6 +90,6 @@ public final class InteractiveChatModel extends BaseChatModel {
     }
     @Override public void otherInformation(AiChatInput input) { delegate.otherInformation(input); }
     @Override public Class<? extends AiChatActuator> getActuator() { return delegate.getActuator(); }
-    @Override public BaseChatModel copy() { var copy = new InteractiveChatModel(configuredDelegate(), runner); return copy; }
-    @Override public BaseChatModel withJsonMode() { return new InteractiveChatModel(configuredDelegate().withJsonMode(), runner); }
+    @Override public BaseChatModel copy() { var copy = new InteractiveChatModel(configuredDelegate(), runner); copy.budgetState = budgetState; copy.budgetPhase = budgetPhase; return copy; }
+    @Override public BaseChatModel withJsonMode() { var copy = new InteractiveChatModel(configuredDelegate().withJsonMode(), runner); copy.budgetState = budgetState; copy.budgetPhase = budgetPhase; return copy; }
 }

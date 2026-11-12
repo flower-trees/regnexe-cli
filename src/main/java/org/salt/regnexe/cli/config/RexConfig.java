@@ -108,6 +108,8 @@ public class RexConfig {
     public static class AgentConfig {
         private int maxRounds = 10;
         private int maxAgentIterations = 20;
+        /** Optional opt-in evaluation caps. Null preserves normal dynamic iteration behavior. */
+        private org.salt.regnexe.agent.core.task.state.ExecutionBudget executionBudget;
         /**
          * Caps consecutive tool-call failures before a round aborts early with a diagnostic,
          * instead of grinding through the rest of maxAgentIterations retrying the same broken

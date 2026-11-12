@@ -1016,6 +1016,7 @@ public class CliMain implements CommandLineRunner {
                 .withEventListener(buildOpikListener(ctx, config))
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
+                .withExecutionBudget(ac.getExecutionBudget())
                 .withMaxConsecutiveToolFailures(ac.getMaxConsecutiveToolFailures())
                 .withSessionBufferSize(ac.getSessionBufferSize())
                 .withSessionCompactPeriod(ac.getSessionCompactPeriod())

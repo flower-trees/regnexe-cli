@@ -39,7 +39,7 @@ class InteractiveControlsTest(unittest.TestCase):
                 elif "task planner" in str(body.get("messages", [])).lower():
                     message = {"role": "assistant", "content": json.dumps({
                         "narrative": "Use bash to execute the requested command once.",
-                        "selectedCapabilityIds": ["bash"],
+                        "selectedCapabilityIds": ["target" if owner.mode == "budget" else "bash"],
                         "capabilityInputDescriptions": {"bash": "Run the command once"},
                         "finalAnswerRequirements": ["Report actual output"]})}
                 elif body.get("tools") and not any(m.get("role") == "tool" for m in body["messages"]):
@@ -457,6 +457,34 @@ class InteractiveControlsTest(unittest.TestCase):
             rows = db.execute("SELECT data FROM task_execution_states").fetchall()
         self.assertEqual(1, len(rows))
         self.assertIn("Write corrected.txt instead", rows[0][0])
+
+    def test_explicit_skill_budget_applies_to_real_cli_and_persisted_state(self):
+        self.child.sendline("/exit"); self.child.expect(pexpect.EOF, timeout=7); self.child.close()
+        skill = self.root / ".rex/skills/target/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: target\ndescription: local budget probe\n---\nUse bash once, then report actual output.\n")
+        path = self.root / "config.yml"
+        config = yaml.safe_load(path.read_text())
+        config["agent"]["execution_budget"] = {"hard_max_iterations": 4, "max_model_calls": 2, "retry_execution": False}
+        path.write_text(yaml.safe_dump(config))
+        self.mode = "budget"
+        env = dict(os.environ, REX_CONFIG=str(path), TERM="xterm-256color")
+        env.pop("REX_MODEL", None); env.pop("REX_API_KEY", None)
+        self.child = pexpect.spawn("java", ["-Duser.home=" + str(self.root), "-jar", str(JAR), "--session", "live"],
+                                   cwd=str(self.root), env=env, encoding="utf-8", timeout=15, dimensions=(40, 140))
+        self.child.logfile_read = self.log
+        self.child.expect_exact("Enter: send / add instruction")
+        self.child.expect(r"rex>|\x1b\[\d+;6H")
+        self.child.sendline("/target execute controlled probe")
+        self.child.expect_exact("[task complete] status=TIMEOUT", timeout=15)
+        self.assertEqual(2, self.requests.qsize(), "No third model request is allowed")
+        self.assertEqual("approved", (self.root / "approved.txt").read_text())
+        with sqlite3.connect(self.root / ".rex/rex.db") as db:
+            state = json.loads(db.execute("SELECT data FROM task_execution_states").fetchone()[0])
+        self.assertEqual("MODEL_CALL_LIMIT", state.get("termination_reason", state.get("terminationReason")))
+        self.assertEqual({"plan": 1, "execute": 1}, state.get("model_call_attempts", state.get("modelCallAttempts")))
+        self.assertEqual("target", state["request"].get("required_skill_id", state["request"].get("requiredSkillId")))
+        self.assertEqual(4, state["rounds"][0].get("applied_max_iterations", state["rounds"][0].get("appliedMaxIterations")))
 
     def test_named_startup_replays_history_and_next_input_resumes_same_task(self):
         self.child.sendline("Analyze this project")

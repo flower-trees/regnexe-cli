@@ -1,0 +1,642 @@
+{
+  "stage": "P06",
+  "status": "passed-no-real-model",
+  "baseline_id": "d9f070f42ad7fcc34aafebe7b66ad0be2fd3a9237fddb824f024de5aa9edfb67",
+  "changed_components_from_p05": [
+    "agent_sources",
+    "artifact",
+    "cli_sources",
+    "evaluation"
+  ],
+  "agent_tests": [
+    {
+      "name": "org.salt.regnexe.agent.core.RequiredSkillExecutionTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "pauseAndRebuiltAgentResumeUseSharedTaskState",
+        "rejectsUnknownDisabledAndNonSkillBeforeAnyModelCall",
+        "resumeRejectsNowDisabledSkillWithoutModelCall",
+        "explicitAndAutoRunSamePersistedPhasesAndSkillBody",
+        "guardStillRequiresCallsForActualToolCapabilities",
+        "constraintSurvivesSerializationResumeAndSupplement",
+        "candidatesAndPlanCannotReplaceOrExpandRequiredSkill",
+        "explicitSkillHasBaseToolsButNotDeclaredExtraTools"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.TaskBudgetTest",
+      "tests": "12",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "plannerTransportRetriesConsumeSameTotalBudget",
+        "sessionSummaryCallsCannotEscapeTaskCallBudget",
+        "cumulativeCallLimitStopsBeforeNextRequestAndPreservesPartialTools",
+        "userPauseHasItsOwnReasonAndDoesNotSpendExecutionCalls",
+        "reflectParseRetriesConsumeSameTotalBudget",
+        "consecutiveToolFailureAbortIsNotAnIterationLimit",
+        "failedExecuteIsNotAutomaticallyReplayed",
+        "dynamicHintCannotRaiseHardIterationCap",
+        "lastPermittedIterationCanFinishAndReceivesWrapUpNotice",
+        "toolExitTimeoutAndExceptionHaveSeparateOutcomes",
+        "outerRoundLimitIsDistinctFromIterationLimit",
+        "countsPlanExecuteAndReflectAttempts"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.TaskResumeSafetyTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "reloadsSelectedTaskAtExecutionTime",
+        "rejectsFinishedForeignOrMissingTaskBeforeExecution",
+        "resumesPreviewedTaskEvenWhenAnotherTaskIsNewer"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.event.CompositeEventListenerTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "everyListenerReceivesEveryEventInRegistrationOrder",
+        "failingListenerDoesNotBlockLaterOnes",
+        "eachListenerKeepsItsOwnFilter"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.event.LoopSpansTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "taskIdsAreStableAndWellFormed",
+        "followUpEventsShareTheSpanOfTheCallTheyBelongTo",
+        "usageWithoutAPrecedingLlmEventHasNoSpan",
+        "nestedLoopHangsUnderTheOuterToolCallRunningAtThatMoment",
+        "spanFieldsDoNotDisturbTheRestOfTheEvent"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.SimpleMarketplaceTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "install_distinctCapabilityIdsWithinSamePlugin_succeeds",
+        "install_duplicateCapabilityIdWithinSamePlugin_throws"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.loader.CachedPluginLoadingTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "installedPlugin_registersUnderRealPluginId_notTheCacheHash"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.loader.DefaultPluginManagerManifestCompatTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "duplicatePluginIdAcrossDirectoriesShouldSkipInsteadOfThrow",
+        "realClaudeCodePluginDirectoryShouldLoadViaJsonManifest",
+        "nativePluginYamlShouldTakePriorityOverPluginJson",
+        "claudePluginJsonKeywordsShouldFallBackToTags",
+        "addDirectoryNoLongerFallsBackToFlatSkillLoading",
+        "skillsDirectoryWithBareSkillMd_loadsAsSingleSkillPlugin",
+        "claudePluginJsonManifestShouldBeRecognized",
+        "directoryWithoutAnyManifestShouldBeSkippedWithoutError"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.loader.PluginCacheInstallerTest",
+      "tests": "9",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "install_sourceIsSymlinkToDirectory_resolvesRealContent",
+        "install_copiesContentAndPointsCurrentAtItsHash",
+        "listInstalledIds_reflectsInstallAndUninstall",
+        "install_excludesDotGitFromHashAndCopy",
+        "install_sameContentTwice_isIdempotentNoOp",
+        "uninstall_removesEntireCacheDirIncludingHistory",
+        "uninstall_nothingInstalled_returnsFalseNotError",
+        "install_differentContent_producesDifferentHashAndMovesCurrent",
+        "install_missingManifest_throws"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.scope.EnabledStateLoaderTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "parsesGlobalIdKeyedBooleans",
+        "emptyFile_returnsEmptyMap",
+        "missingFile_returnsEmptyMap"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.scope.EnabledStateWriterTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "remove_dropsKeyAndKeepsOthers",
+        "setEnabled_preservesExistingKeys",
+        "remove_missingFile_isNoOp",
+        "setEnabled_overwritesExistingValue",
+        "setEnabled_createsFileWhenMissing"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.agent.core.marketplace.scope.ScopeResolverTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "layersDoNotInterfereWithUnrelatedKeys",
+        "laterLayerOverridesEarlierLayerForSameKey",
+        "emptyLayers_resolveToEmptyMap_andEverythingDefaultsEnabled",
+        "nullEnabledMapInALayerIsIgnoredRatherThanThrowing",
+        "singleLayer_isReflectedAsIs"
+      ]
+    }
+  ],
+  "cli_tests": [
+    {
+      "name": "org.salt.regnexe.cli.ExecutionOwnershipTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "unopenedSessionDoesNotEnterTaskCallable",
+        "interruptedWaiterDoesNotReleaseLiveWorkerLock"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.ResumeCommandTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "startupAndResumeDisplaySameHistoryAndSelectSameUnfinishedTask",
+        "busyDestinationIsNotPreviewedAndCurrentSessionIsPreserved",
+        "previewOpensSessionAndKeepsLockWhileWaitingForInput",
+        "resumeWithoutNamePrintsOnlyNamesInCurrentWorkspace",
+        "finishedSessionShowsHistoryWithoutResumingAndEmptySessionStaysQuiet"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.db.RexDatabaseMigrationTest",
+      "tests": "9",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "completedMigrationIsNotRepeatedOnRestart",
+        "freshDatabaseIsMarkedBeforeAnyHistoryIsWritten",
+        "leavesOtherApplicationsAndUnmatchedKeysUntouched",
+        "legacyRecordsMustNotMergeIntoAnAmbiguousNumericDestination",
+        "preservesSharedHashInsteadOfGuessingOwnership",
+        "failedMigrationRollsBackAndCanBeRetried",
+        "migratesUniqueLegacyHashAndRetainsNamedHistory",
+        "destinationCollisionPreservesBothCopies",
+        "numericSessionNameMustNotBecomeAnotherSession"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.db.SessionDirectoryFilterTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "emptyAndInvalidStoredDirectoriesAreNotMistakenForCurrentProject",
+        "includesCanonicalAliasesButNotOtherProjectsOrChildDirectories"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.db.SessionIdentityTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "competingCreatorsReturnSamePersistedIdentityAndWorkspace"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.db.SqliteConversationStorageTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "collidingAndNumericSessionNamesStayIsolatedAcrossRestart"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.db.SqliteTaskStoreTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "existingVersionColumnAndJsonAreIgnored",
+        "newDatabaseHasNoTaskVersionColumn",
+        "resumableTasksIncludeEveryUnfinishedStatusOnlyForRequestedSession",
+        "reopenedDatabaseRestoresActualMessageTypesAndSummary"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.ClipboardSupportTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "nativeClipboardReceivesLiteralUtf8ThroughStdin",
+        "clipboardFailureAndTimeoutDoNotHangTheInputThread",
+        "remoteClipboardUsesEncodedOsc52WithoutClaimingSuccess"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.DockedLineReaderMouseTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "malformedMouseReportsAreIgnored",
+        "sgrReportsSupportWideTerminalsAndReleaseEvents"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.InteractiveApprovalTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "navigatedSelectionCanBeAcceptedWithoutConsumingAnInputDraft",
+        "enterDefaultsToNoAndArrowMovementWraps",
+        "cancellationHidesMenuAndNextApprovalStartsAtNo"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.InteractiveModelBudgetTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "steeringReRequestsCountAtUnderlyingRequestBoundary"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.InteractiveTaskRunnerTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "cancelledToolCannotStartSideEffects",
+        "steeringCancelsOnlyModelRequestsAndPauseIsIdempotent",
+        "liveInputBelongsToRunningTaskAndCancelledWorkerBlocksAnotherTask",
+        "approvalUsesInputMailboxAndEscapeReleasesWaitingWorker"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.SessionPickerTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "cancelAndTypedInputDoNotOpenASelectedSession",
+        "longListKeepsTheSelectedNameVisibleInABoundedWindow",
+        "startsAtCurrentSessionAndSelectsOnlyAfterEnter"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.interactive.TranscriptViewportTest",
+      "tests": "7",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "wideAndCombiningCharactersAreNeverSplit",
+        "selectionKeepsHardNewlinesAndBlankLinesButNotPadding",
+        "softWrapAndReverseDraggingCopyOnlyOriginalText",
+        "blankLinesStylesAndWidthAreRetained",
+        "scrollingAndDraggingOnlyChangeTheHistoryViewport",
+        "clickAndEvictedTextDoNotProduceAnInvalidSelection",
+        "backgroundOutputRetainsSelectionAndItsVisibleText"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.session.SessionContextTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "closingWindowWaitsForExistingWorkerBeforeReleasingOwnership",
+        "busyDestinationPreservesCurrentSessionAndSuccessfulSwitchReleasesOld",
+        "idleAndCompletedSessionsStayOwnedUntilClose"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.session.SessionExecutionLockTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "otherProcessCannotAcquireAndHardExitReleasesOwnership",
+        "sameSessionIsBusyButDifferentSessionsCanRun"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.tools.FileToolsBoundaryTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "editRejectsTargetChangedToAnotherPermittedFileDuringConfirmation",
+        "recursiveSearchSkipsExternalFileSymlinks",
+        "writeRevalidatesParentAfterConfirmation",
+        "readListAndSearchReturnBoundaryErrors",
+        "permitsNormalCreateAndEditThroughInternalLink",
+        "writesAndEditsRejectExternalLinksWithoutChangingTarget"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.tools.ShellCommandExecutorTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "continuousOutputDoesNotPreventTimeoutOrExceedCaptureLimit",
+        "cancellationStopsRunningChildAndRetainsOutput",
+        "interruptionStopsChildAndRestoresInterruptFlag",
+        "capturesUtf8StdoutStderrAndNonzeroExit",
+        "silentCommandTimesOutBeforeItExits",
+        "childHoldingOutputPipeCannotBlockAfterShellExits",
+        "timeoutPreservesPartialOutputAndKillsChild",
+        "alreadyCancelledCommandNeverStarts"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.tools.ToolOutputBudgetTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "modelSeesBoundedPreviewAndFullOutputPointer"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.tools.WorkspaceContextTest",
+      "tests": "11",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "rejectsRelativeTraversalForExistingAndMissingReadTargets",
+        "rejectsFileAncestorsForNewPaths",
+        "resolvesDotDotAfterFollowingSymlinks",
+        "permitsLinksWhoseRealTargetsAreWithinWorkspace",
+        "absoluteTempReadExceptionCannotFollowLinkToUnpermittedLocation",
+        "deniesExternalFileAndDirectoryLinksForReadsAndWrites",
+        "missingPathsInsideWorkspaceRemainValid",
+        "supportsMultipleRootsAndRuntimeGrants",
+        "systemTempReadExceptionDoesNotGrantWritesOrRelativeEscapes",
+        "danglingAndCyclicLinksFailClosed",
+        "supportsSymlinkWorkspaceRootAndPinsItsGrant"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.ui.TerminalCliRendererApprovalTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "approvalSurvivesSameSessionRebuildButDoesNotLeakToAnotherSession",
+        "yesApprovesOneCallOnly",
+        "menuConfirmationUsesSameSessionIsolation",
+        "missingSessionOrToolKeyNeverRemembersApproval",
+        "newRendererDoesNotInheritPreviousProcessApprovals",
+        "fileAndMcpApprovalsAreAlsoIndependentBetweenSessions"
+      ]
+    },
+    {
+      "name": "org.salt.regnexe.cli.ui.TerminalCliRendererHistoryTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0",
+      "cases": [
+        "savedAnswersUseLiveRenderingAndCurrentThemePromptWithoutTruncation",
+        "compactedHistoryIsIdentifiedAsSummaryRatherThanInventedDialogue",
+        "questionHeadingAndCodeAreColoredWhenEnabled"
+      ]
+    }
+  ],
+  "pty_tests": {
+    "passed": 12,
+    "real_http_requests_in_budget_case": 2,
+    "persisted_reason": "MODEL_CALL_LIMIT",
+    "persisted_phase_attempts": {
+      "plan": 1,
+      "execute": 1
+    }
+  },
+  "runner_tests": {
+    "baseline": 4,
+    "process_deadline": 3,
+    "automatic_retries": 0
+  },
+  "verified_examples": {
+    "iteration_cap": {
+      "planner_hint": 500,
+      "hard_cap": 2,
+      "applied": 2,
+      "actual_model_attempts": 3,
+      "tool_calls": 2,
+      "reason": "ITERATION_LIMIT"
+    },
+    "total_call_cap": {
+      "hard_iterations": 8,
+      "call_cap": 3,
+      "actual_model_attempts": 3,
+      "completed_tool_records": 2,
+      "reason": "MODEL_CALL_LIMIT"
+    },
+    "model_input_tool_output": {
+      "full_stdout_chars": 5000,
+      "initial_tool_message_upper_bound_chars": 2800,
+      "full_file_preserved": true,
+      "model_attempts": 4
+    },
+    "deadline": {
+      "test_timeout_seconds": 0.3,
+      "partial_output_preserved": true,
+      "child_late_write_prevented": true
+    }
+  },
+  "cli_jar_sha256": "1369ba971a36b5ceda619369cd3890513f2bdce9520b8fdc9598c58b6a557227",
+  "dependencies": {
+    "regnexe-agent": {
+      "coordinates": {
+        "artifactId": "regnexe-agent",
+        "groupId": "io.github.flower-trees",
+        "version": "0.1.4-SNAPSHOT"
+      },
+      "embedded_sha256": "bd04d2fb81048eccfd1582d32cce4a38939e00138755d35c223ca8a02fba9773",
+      "cached_sha256": "bd04d2fb81048eccfd1582d32cce4a38939e00138755d35c223ca8a02fba9773",
+      "embedded_matches_cache": true,
+      "source_files": 71,
+      "source_mismatches": []
+    },
+    "j-langchain": {
+      "coordinates": {
+        "artifactId": "j-langchain",
+        "groupId": "io.github.flower-trees",
+        "version": "1.0.19"
+      },
+      "embedded_sha256": "3ebe08c50e8281e1c2e7fe9a47a6916873994f24cad811486164bace10b194b8",
+      "cached_sha256": "3ebe08c50e8281e1c2e7fe9a47a6916873994f24cad811486164bace10b194b8",
+      "embedded_matches_cache": true
+    }
+  },
+  "loading": {
+    "output": "/Users/chuanzhizhu/Documents/develop/my/regnexe-cli/target/skill-eval-week1/p06-loading-20261112",
+    "file_count": 145,
+    "registered_count": 145,
+    "enabled_count": 145,
+    "candidate_count": 145,
+    "missing_registration": [],
+    "extra_registration": [],
+    "registration_failures": [],
+    "empty_descriptions": [
+      "robot-ai2robotics",
+      "robot-aimagic",
+      "robot-aobizhongguang",
+      "robot-aoyi",
+      "robot-benmo",
+      "robot-bjhumanoid",
+      "robot-changmugu",
+      "robot-corenetic",
+      "robot-dahuan",
+      "robot-daxiangantai",
+      "robot-dazu",
+      "robot-ecovacs-b2b",
+      "robot-efort",
+      "robot-estun",
+      "robot-futuring",
+      "robot-gaode",
+      "robot-gaoqing",
+      "robot-gigaai",
+      "robot-guiji",
+      "robot-guoxing",
+      "robot-harmonic",
+      "robot-keli",
+      "robot-lingqiao",
+      "robot-lingtian",
+      "robot-lingzu",
+      "robot-linktouch",
+      "robot-luobo",
+      "robot-lvdi",
+      "robot-moqii",
+      "robot-moxian",
+      "robot-noitom",
+      "robot-qiangnao",
+      "robot-roboct",
+      "robot-robotis",
+      "robot-saigan",
+      "robot-shenpu",
+      "robot-sichuanjsx",
+      "robot-slamtec",
+      "robot-weilaishidai",
+      "robot-wlrobo",
+      "robot-xela",
+      "robot-xense",
+      "robot-xgo",
+      "robot-xinshida",
+      "robot-xyz",
+      "robot-yinshi",
+      "robot-ysr",
+      "robot-yuanqidian",
+      "robot-yunqichu",
+      "robot-zhaowei",
+      "robot-zhixingjian",
+      "robot-zhongxin",
+      "robot-zjhumanoid"
+    ],
+    "duplicate_short_names": {},
+    "metadata_counts": {
+      "missing_frontmatter": 52,
+      "valid": 92,
+      "yaml_error": 1
+    },
+    "target": {
+      "plugin_id": "robot-description-style",
+      "capability_id": "robot-description-style",
+      "name": "robot-description-style",
+      "description": "撰写/规范化 salt-robot-backend 里 robot.description（简介）与 robot.detail_description（详细描述）的文风规则——简介要短、详细描述按内容量分段、禁止\"官网\"字样和内部分析笔记、参数不堆成表。新品牌导入时写这两个字段、或用户要求\"优化/规范化产品描述\"\"清理描述里的官网/内部备注\"时使用。",
+      "enabled": true,
+      "type": "SKILL",
+      "body_chars": 3179,
+      "body_sha256": "5ccefc82ef340d8fa28a1af441aeb561a9206d4e04176e59603c4e5cf4f44235",
+      "reference_count": 0,
+      "script_count": 0
+    },
+    "enabled_control": {
+      "disabled_target_absent": true,
+      "original_project_state_restored": true,
+      "restored_target_present": true
+    },
+    "model_calls": 0,
+    "business_tool_calls": 0,
+    "mcp_connections": 0
+  },
+  "budget_fragment_sha256": "bca045e9009c58062b6339e7df100a2aca86c556c0289442585b2ec239f16427",
+  "real_model_calls": 0,
+  "business_database_operations": 0,
+  "mcp_connections": 0,
+  "opik_calls": 0,
+  "limitations": [
+    "Framework invocation attempts are distinct from provider-internal HTTP retries and billable token usage.",
+    "Token threshold is observational, not a hard token limit.",
+    "Process deadline helper is verified independently; legacy general Runner is unchanged. P07 must wire it into the single-case path.",
+    "Initial Shell output is bounded, but subsequent reads of offloaded files can grow context.",
+    "P04 reference style review and P07 business scoring/paid model run are still pending."
+  ]
+}
