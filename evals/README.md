@@ -149,3 +149,17 @@ PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/check_skill_environment.p
 ## Skill 首周 P04：单产品任务夹具
 
 [用例 JSON](fixtures/skill-week1/description-case.json)、[参考草稿](fixtures/skill-week1/description-reference.json)与[验收清单](fixtures/skill-week1/description-acceptance.md)定义一个合成产品。尚未调用模型或创建数据库夹具，参考文风待人工确认；此处没有新增业务运行入口或已通过的测评分数。后续 Auto 输入仅投递 auto_prompt/facts/before，不能泄漏完整用例中的 Skill 名称与参考答案。实际评分接入留 P06，数据库夹具留 P10。
+
+
+## Skill 统一基线检查
+
+执行链改造前的统一清单及使用方式见 [pre-P05 基线](baselines/skill-week1-pre-p05/README.md)。运行 `skill_baseline.py check --manifest <清单>` 核对内容；返回 0/1/2 分别表示一致/变化/校验异常。采集新清单使用 `capture` 并指定新路径，不覆盖原清单。当前仅离线加载配置，尚未接入 Runner 自动门禁；正式测评还需记录实际配置、验证预算并做数据库状态前检。
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_baseline.py -v
+```
+
+
+## P05 共享执行链验证
+
+[post-P05 清单与结果](baselines/skill-week1-post-p05/README.md)记录指定 Skill 转普通任务后的构建与测试证据。Agent 使用 `mvn -o -Plocal-tests test`，其中 RequiredSkillExecutionTest 使用内存固定响应模型检查完整任务链、恢复和工具范围，不调用官方模型。CLI 用 `mvn -o verify` 集成新快照。正式测评仍等待 P06 预算验收，勿将这些工程测试算作业务任务成功率。
