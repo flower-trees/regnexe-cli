@@ -1,0 +1,30 @@
+{
+  "stage": "P03",
+  "status": "passed",
+  "recorded_at": "2026-11-11T15:35:50.335245+00:00",
+  "database": "robot-pre",
+  "env_database_matches_target": false,
+  "account_sha256": "124878814e786e5bbcf6224955fa96e96c323d11bf86b4964bbe58f6166b20c8",
+  "server_sha256": "6da56b5d1d9671e2d441a45224a4cf215b252f4ba8db810b1fa032ac10c3a2c2",
+  "session_read_only": true,
+  "table_count": 50,
+  "robot_table_present": true,
+  "description_columns_present": [
+    "description",
+    "detail_description"
+  ],
+  "connection": {
+    "host_sha256": "aa4c46170e4b11398788bd24909e2bdf85ccb3616125779584e2b1cd62ebcc54",
+    "user_sha256": "18d63be10ad544a04a22c944dee01d6d864ec69b797a58edae92e6a44ad8fdbf",
+    "connect_timeout": 5,
+    "read_timeout": 5,
+    "write_timeout": 5
+  },
+  "db_source_sha256": "f06cf4c21142e7ccbdcfd46ec0deeb6f645c8fe23e770dcbeb5ae0805d39d72c",
+  "model_calls": 0,
+  "database_writes": 0,
+  "limitations": [
+    "Connection and identity only; P10 write privileges, fixtures and schema acceptance remain unverified.",
+    "Timeouts are enforced by this probe wrapper; upstream lib/db.py remains unchanged."
+  ]
+}

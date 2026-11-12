@@ -144,3 +144,8 @@ PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/check_skill_environment.p
 默认使用本次 P00 的 `target/skill-eval-week1/20261109T132544Z`；换基线时通过 `--baseline` 指定，JAR 哈希不一致会停止。可用 `--business-python` 指定业务 venv 解释器，`--output` 指定新的证据目录。Runner 需要已有 Opik SDK，本机 Opik 必须可用；脚本会向 `regnexe-skill-preflight` 写入有标记的前置 Trace 并回读，不调用模型或业务数据库，不生成业务得分。
 
 子进程私有 PATH 用来验证裸 `python3`，不会修改系统环境。真实 `lib/db.py` 复制到无 `.env` 的隔离工作区，导入时守卫连接入口；不等于测试库已准备好。此入口直接检查打包 Shell 后端，不能代替完整 Agent 运行或授权 UI 测试。[2026-11-10 快照](baselines/skill-week1-2026-11-10/README.md)记录结果与验证范围。
+
+
+## Skill 首周 P04：单产品任务夹具
+
+[用例 JSON](fixtures/skill-week1/description-case.json)、[参考草稿](fixtures/skill-week1/description-reference.json)与[验收清单](fixtures/skill-week1/description-acceptance.md)定义一个合成产品。尚未调用模型或创建数据库夹具，参考文风待人工确认；此处没有新增业务运行入口或已通过的测评分数。后续 Auto 输入仅投递 auto_prompt/facts/before，不能泄漏完整用例中的 Skill 名称与参考答案。实际评分接入留 P06，数据库夹具留 P10。
