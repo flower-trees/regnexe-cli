@@ -4,9 +4,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import lombok.Data;
-import org.yaml.snakeyaml.Yaml;
-
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -15,6 +12,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import lombok.Data;
+import org.salt.regnexe.agent.core.task.state.ExecutionBudget;
+import org.yaml.snakeyaml.Yaml;
 
 /**
  * Loaded from ~/.rex/config.yml.
@@ -109,7 +109,7 @@ public class RexConfig {
         private int maxRounds = 10;
         private int maxAgentIterations = 20;
         /** Optional opt-in evaluation caps. Null preserves normal dynamic iteration behavior. */
-        private org.salt.regnexe.agent.core.task.state.ExecutionBudget executionBudget;
+        private ExecutionBudget executionBudget;
         /**
          * Caps consecutive tool-call failures before a round aborts early with a diagnostic,
          * instead of grinding through the rest of maxAgentIterations retrying the same broken

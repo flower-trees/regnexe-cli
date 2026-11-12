@@ -1,15 +1,44 @@
 package org.salt.regnexe.cli;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Properties;
+import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.Reference;
 import org.jline.reader.UserInterruptException;
 import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 import org.salt.jlangchain.ai.client.AiException;
-import org.salt.jlangchain.core.history.HistoryInfos;
+import org.salt.jlangchain.ai.client.stream.HttpStreamClient;
 import org.salt.jlangchain.core.agent.memory.SlidingWindowContext;
+import org.salt.jlangchain.core.history.HistoryInfos;
 import org.salt.jlangchain.core.llm.BaseChatModel;
 import org.salt.jlangchain.core.message.BaseMessage;
 import org.salt.jlangchain.core.message.MessageType;
@@ -36,20 +65,18 @@ import org.salt.regnexe.agent.core.marketplace.scope.ScopedEnabledState;
 import org.salt.regnexe.agent.core.task.AgentResult;
 import org.salt.regnexe.agent.core.task.state.RoundRecord;
 import org.salt.regnexe.agent.core.task.state.TaskExecutionState;
-import org.salt.regnexe.agent.core.task.state.reflection.ReflectionDecision;
 import org.salt.regnexe.agent.core.task.state.TaskRequest;
+import org.salt.regnexe.agent.core.task.state.reflection.ReflectionDecision;
 import org.salt.regnexe.cli.config.RexConfig;
-import org.salt.regnexe.cli.interactive.*;
-import org.salt.jlangchain.ai.client.stream.HttpStreamClient;
-import org.jline.reader.Reference;
 import org.salt.regnexe.cli.db.RexDatabase;
 import org.salt.regnexe.cli.db.SqliteConversationStorage;
 import org.salt.regnexe.cli.db.SqliteTaskStore;
 import org.salt.regnexe.cli.event.CliEventListener;
 import org.salt.regnexe.cli.event.OpikEventListener;
+import org.salt.regnexe.cli.interactive.*;
 import org.salt.regnexe.cli.observe.OtlpSpanExporter;
-import org.salt.regnexe.cli.session.SessionContext;
 import org.salt.regnexe.cli.session.PendingResume;
+import org.salt.regnexe.cli.session.SessionContext;
 import org.salt.regnexe.cli.session.SessionRow;
 import org.salt.regnexe.cli.tools.BashTool;
 import org.salt.regnexe.cli.tools.FileTools;
@@ -58,49 +85,29 @@ import org.salt.regnexe.cli.tools.WorkspaceContext;
 import org.salt.regnexe.cli.ui.CliRenderer;
 import org.salt.regnexe.cli.ui.TerminalCliRenderer;
 import org.salt.regnexe.cli.ui.ThemeConfig;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import java.util.stream.Stream;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-
 @SpringBootApplication
 public class CliMain implements CommandLineRunner {
 
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(CliMain.class);
+    private static final Logger log = LoggerFactory.getLogger(CliMain.class);
 
     static final String VERSION = buildVersion();
 
     private static String buildVersion() {
-        java.util.Properties info = new java.util.Properties();
-        try (java.io.InputStream input = CliMain.class.getResourceAsStream("/META-INF/build-info.properties")) {
+        Properties info = new Properties();
+        try (InputStream input = CliMain.class.getResourceAsStream("/META-INF/build-info.properties")) {
             if (input != null) {
                 info.load(input);
                 return info.getProperty("build.version", "development");
             }
-        } catch (java.io.IOException ignored) {
+        } catch (IOException ignored) {
             // Running directly from an IDE may not have generated build metadata yet.
         }
         return "development";
@@ -539,7 +546,7 @@ public class CliMain implements CommandLineRunner {
                 if (input.isEmpty()) continue;
                 if (input.equals("/exit") || input.equals("/quit")) { exitAction.run(); break; }
                 if (input.equals("/mouse") || input.startsWith("/mouse ")) {
-                    String mode = input.substring(6).trim().toLowerCase(java.util.Locale.ROOT);
+                    String mode = input.substring(6).trim().toLowerCase(Locale.ROOT);
                     if (mode.equals("on") || mode.equals("off")) {
                         navigation.mouse(mode.equals("on"));
                         out.println(navigation.mouseEnabled()
@@ -627,7 +634,7 @@ public class CliMain implements CommandLineRunner {
                     reconnectAfterCancellation.run();
                     out.println("[task complete] status=" + result.getStatus()); out.flush();
                 } catch (Exception e) {
-                    if (!run.isCancelled()) throw new java.util.concurrent.CompletionException(e);
+                    if (!run.isCancelled()) throw new CompletionException(e);
                     Thread.interrupted();
                     TaskExecutionState state = run.state();
                     if (state != null) {
@@ -640,7 +647,7 @@ public class CliMain implements CommandLineRunner {
                     reconnectAfterCancellation.run();
                     out.println("[task complete] status=PAUSED"); out.flush();
                 }
-            } catch (Exception e) { throw new java.util.concurrent.CompletionException(e); }
+            } catch (Exception e) { throw new CompletionException(e); }
         }, error -> {
             // Expected cancellation is handled above. Persistence/cleanup failures remain errors.
             renderer.error(describeError(error));
@@ -697,8 +704,8 @@ public class CliMain implements CommandLineRunner {
      * same second; {@code name} is UNIQUE in the sessions table.
      */
     private static String generateSessionName() {
-        String ts = java.time.LocalDateTime.now()
-                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        String ts = LocalDateTime.now()
+                .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
         String suffix = UUID.randomUUID().toString().substring(0, 4);
         return SESSION_NAME_PREFIX + "-" + ts + "-" + suffix;
     }
@@ -804,7 +811,7 @@ public class CliMain implements CommandLineRunner {
 
     private void printSessionHistory(String targetSession, SessionContext ctx, RexDatabase db,
                                      PrintWriter out, boolean reportEmpty, CliRenderer renderer) {
-        java.util.List<org.salt.jlangchain.core.history.HistoryInfos> turns;
+        List<HistoryInfos> turns;
         try {
             turns = db.loadConversation(targetSession);
         } catch (Exception e) {
@@ -948,14 +955,14 @@ public class CliMain implements CommandLineRunner {
         return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName() + " (no message)";
     }
 
-    private static java.util.Map<String, Object> deepseekThinkingKwargs(String model) {
+    private static Map<String, Object> deepseekThinkingKwargs(String model) {
         if (model == null) return null;
         String m = model.toLowerCase();
         // deepseek-family models (direct or aliyun-hosted) default chain-of-thought ON, wasting
         // billed tokens/latency on Plan/Execute/Reflect calls that never surface it. Confirmed via
         // direct curl to both api.deepseek.com and Aliyun's DashScope endpoint.
         if (m.startsWith("deepseek-")) {
-            return java.util.Map.of("thinking", java.util.Map.of("type", "disabled"));
+            return Map.of("thinking", Map.of("type", "disabled"));
         }
         // harness-punchbag-* (local LiteLLM proxy, vendor: custom): confirmed via real 400s from
         // three separate call sites (TaskPlanner.process, Reflector.process, and now
@@ -971,7 +978,7 @@ public class CliMain implements CommandLineRunner {
         // rather than allow-listing one more exact name each time a different tier hits the same
         // wall.
         if (m.startsWith("harness-punchbag")) {
-            return java.util.Map.of("temperature", 1);
+            return Map.of("temperature", 1);
         }
         return null;
     }
