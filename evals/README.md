@@ -194,3 +194,18 @@ PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/skill_week1_runner.py run
 ```
 
 run 要求 DEEPSEEK_KEY 非空和本机 Opik 健康，保存 stdout/stderr、任务账本、回答、初筛、Trace 与实际模型/用量。同目录禁止重复运行，失败也不重试；原始证据保留在忽略的 target 下，长期报告复制脱敏产物。旧综合 runner.py 不受影响。Token 阈值没有变成硬 Token 限制。
+
+
+## P09 反思逐项事实核验与历史回放
+
+[首轮结果及校准限制](baselines/skill-week1-p09-2026-11-13/README.md)：保持 P07 原始错误答案，只改变可选反思协议；一次真实反思已拒绝旧答案，但部分转述/术语解释被保守拒绝，正常生成质量尚未重测。
+
+CLI agent.factual_review_source 提供正向事实 Map，require_factual_review=true 要求显式来源；缺少时失败。默认不启用。框架核验完整片段覆盖和 JSON pointer，不能以结构验证替代语义/人工复核。评测配置通过 SKILL_EVAL_FACTS_JSON 传递现有 facts 的正向部分，Planner/Executor 提示词不变。
+
+```bash
+# 对实际打包 Reflector 回放旧固定响应，完全本地。
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/replay_factual_review.py prepare --mock --output target/p09/example-mock
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/replay_factual_review.py run --output target/p09/example-mock
+```
+
+不带 --mock 的 prepare/run 会进入真实模型回放；run 硬限一次框架调用、120 秒且禁止同目录再执行。本轮真实调用已完成，不自动重跑。回放只验证反思检测，没有 Planner/Skill/工具执行，不计为新的 P07 业务样本。

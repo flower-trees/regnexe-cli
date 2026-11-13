@@ -1,6 +1,7 @@
 """Real CLI subprocess + local fixed-response HTTP server; no paid model/Opik/DB."""
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import threading
@@ -21,8 +22,17 @@ class RunnerTest(unittest.TestCase):
                 messages = str(body['messages'])
                 if 'You are a task planner' in messages:
                     content = json.dumps({'selectedCapabilityIds':['robot-description-style'], 'narrative':'Rewrite offline'})
-                elif 'You are a reflection judge' in messages:
-                    content = json.dumps({'action':'FINISH', 'reason':'Local fixture checked'})
+                elif 'You are a reflection judge' in messages or 'Review a standalone offline text result' in messages:
+                    text = '\n'.join(m.get('content', '') for m in body['messages'])
+                    ids = [int(value) for value in re.findall(r'\[claim:(\d+)\]', text)]
+                    if not ids:
+                        ids = [int(value) for value in re.findall(r'(?m)^(\d+): ', text)]
+                    if not ids:
+                        raise AssertionError('Factual review claim list missing')
+                    content = json.dumps({'action':'FINISH', 'reason':'Local fixture checked',
+                        'groundingReview': {'checks': [{'claimId': value, 'assessment':'SUPPORTED',
+                            'sourcePointers':['/name','/product_kind','/intended_use','/payload_kg','/reach_mm','/capabilities/0']}
+                            for value in ids]}})
                 else:
                     content = json.dumps(expected, ensure_ascii=False)
                 payload = json.dumps({'choices':[{'message':{'role':'assistant','content':content},'finish_reason':'stop'}]}).encode()
@@ -54,6 +64,16 @@ class RunnerTest(unittest.TestCase):
                 self.assertEqual(runner.ALLOWED, names)
                 self.assertEqual({'plan':1,'execute':1,'reflect':1}, result['model_call_attempts'])
                 self.assertEqual(before,(out/'workspace/input.json').read_text())
+                state = json.loads((out/'state.json').read_text())
+                source = runner.field(state['request'], 'authoritativeFacts')
+                self.assertTrue(source)
+                self.assertTrue(runner.field(state['request'], 'offlineTextReview'))
+                reflection_text = str(requests[2]['messages'])
+                self.assertIn('[claim:1]', reflection_text)
+                self.assertNotIn('Plan narrative:', reflection_text)
+                self.assertNotIn('unknown', source)
+                reflection = runner.field(state['rounds'][0], 'reflection')
+                self.assertTrue(runner.field(reflection, 'groundingReview'))
                 with self.assertRaises(FileExistsError):
                     runner.run(out)
                 self.assertEqual(3,len(requests))

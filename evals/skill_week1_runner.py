@@ -147,7 +147,9 @@ def run(out):
     with (out/'attempt.json').open('x') as claim:
         json.dump({'started_at': datetime.now(timezone.utc).isoformat(), 'attempt': 1}, claim)
     env = {key: value for key, value in os.environ.items() if key in {'PATH','JAVA_HOME','LANG','LC_ALL','TMPDIR','SYSTEMROOT'}}
-    env.update(REX_CONFIG=str(config), SKILL_EVAL_SOURCE_ROOT=str(ROOT.parent/'salt-robot-skills'),
+    packet = json.loads((out/'workspace/input.json').read_text())
+    positive_facts = {key: value for key, value in packet['facts'].items() if key != 'unknown'}
+    env.update(SKILL_EVAL_FACTS_JSON=json.dumps(positive_facts, ensure_ascii=False), REX_CONFIG=str(config), SKILL_EVAL_SOURCE_ROOT=str(ROOT.parent/'salt-robot-skills'),
                DEEPSEEK_KEY='local-test-only' if meta['mock'] else os.environ['DEEPSEEK_KEY'],
                NO_PROXY='localhost,127.0.0.1,::1', TERM='dumb')
     process = run_bounded(['java', '-Duser.home='+str(out/'home'), '-jar', str(ROOT/'target/regnexe-cli.jar'),

@@ -1,0 +1,10 @@
+{
+  "mock": true,
+  "input_sha256": "1fb012fa5f8554c8d97448e7186e224b1f285e471fb200aa723ac61eeb4050c3",
+  "source_sha256": "a1def200c161538205cbf556f332faf79a1b811ee2eea85dc1825e831722ec31",
+  "model": "deepseek-flash",
+  "model_call_cap": 1,
+  "timeout_seconds": 120,
+  "attempts_allowed": 1,
+  "purpose": "Replay the original bad answer through Reflector only; no Skill/Planner/tool execution."
+}

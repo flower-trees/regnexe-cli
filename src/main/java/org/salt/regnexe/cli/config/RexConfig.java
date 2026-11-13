@@ -14,6 +14,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.Data;
 import org.salt.regnexe.agent.core.task.state.ExecutionBudget;
+import org.salt.regnexe.agent.core.task.state.OfflineTextReview;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -112,6 +113,10 @@ public class RexConfig {
         private ExecutionBudget executionBudget;
         /** Null exposes normal base tools; an explicit list restricts registration to those names. */
         private List<String> allowedBaseTools;
+        /** Optional positive facts used only by Reflector for evidence review. */
+        private Map<String, Object> factualReviewSource;
+        private OfflineTextReview offlineTextReview;
+        private boolean requireFactualReview;
         /**
          * Caps consecutive tool-call failures before a round aborts early with a diagnostic,
          * instead of grinding through the rest of maxAgentIterations retrying the same broken
