@@ -1,0 +1,15 @@
+{
+  "stage": "P07",
+  "mock": false,
+  "config": "evals/skill-week1-offline.yml",
+  "config_sha256": "0cccffae3500af0bce2f390f1924c9ddf85063a776707971636d58de42aff741",
+  "case_sha256": "b983fedd5392ebd8bc483b02307e30ae52ddb83a117bdbe086d10f177ea67ebe",
+  "skill_sha256": "617848a4580e93faa9169d10b6ddcb127cb54b6f524fcae3885ea712b2d5a093",
+  "stdin_sha256": "7b6b90919228634a3252218eca10102d2eea5ffa7b6f9a8cee33359b9a267f8c",
+  "packet_sha256": "225e38063dda28c05db78be0798bb4955b2a362bee8e461984a9427572a6266c",
+  "baseline_id": "fb05e9decf4be56d9156582d7e8a7295f63ad0a233ce44ca15f895e22cc3255e",
+  "session": "p07-3d5c3340ebbe",
+  "timeout_seconds": 120,
+  "automatic_retries": 0,
+  "manual_reference_review": "pending"
+}

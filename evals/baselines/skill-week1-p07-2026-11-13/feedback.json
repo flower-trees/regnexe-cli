@@ -1,0 +1,18 @@
+{
+  "project_url": "http://localhost:28173/default/redirect/projects?name=regnexe-skill-week1",
+  "trace_id": "01a1d364-d88f-77fd-89d7-ed540a0334d8",
+  "feedback": [
+    {
+      "id": "01a1d364-d88f-77fd-89d7-ed540a0334d8",
+      "name": "p07_automatic_initial_checks",
+      "value": 1.0,
+      "reason": "JSON/schema, prohibited text and lexical fact checks passed; not a business-success score."
+    },
+    {
+      "id": "01a1d364-d88f-77fd-89d7-ed540a0334d8",
+      "name": "p07_assistant_grounding_review",
+      "value": 0.0,
+      "reason": "Assistant review found unsupported claims: compact structure, no complex programming/low learning barrier, desktop demand coverage. User manual review pending."
+    }
+  ]
+}

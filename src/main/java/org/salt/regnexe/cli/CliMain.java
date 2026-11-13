@@ -1015,6 +1015,25 @@ public class CliMain implements CommandLineRunner {
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
         BaseChatModel summarizer = buildSummarizerModel(config);
+        List<Tool> baseTools = new ArrayList<>(List.of(
+                liveTasks.guard(FileTools.readFile(workspace), null),
+                liveTasks.guard(FileTools.listFiles(workspace), null),
+                liveTasks.guard(FileTools.searchFiles(workspace), null),
+                liveTasks.guard(FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
+                liveTasks.guard(FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
+                liveTasks.guard(BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction,
+                        taskPauseRequested::get), null)
+        ));
+        List<String> allowedBaseTools = ac.getAllowedBaseTools();
+        if (allowedBaseTools != null) {
+            List<String> registeredNames = baseTools.stream()
+                    .map(Tool::getName)
+                    .toList();
+            if (!registeredNames.containsAll(allowedBaseTools)) {
+                throw new IllegalArgumentException("Unknown allowed base tool name");
+            }
+            baseTools.removeIf(tool -> !allowedBaseTools.contains(tool.getName()));
+        }
         var builder = agentBuilder
                 .withDefaultModel(config.getModel().getVendor(), config.effectiveModel(),
                         deepseekThinkingKwargs(config.effectiveModel()))
@@ -1031,15 +1050,7 @@ public class CliMain implements CommandLineRunner {
                         .windowSize(ac.getContextWindowSize())
                         .summarizer(summarizer == null ? null : new InteractiveChatModel(summarizer, liveTasks))
                         .build())
-                .withTool(
-                        liveTasks.guard(FileTools.readFile(workspace), null),
-                        liveTasks.guard(FileTools.listFiles(workspace), null),
-                        liveTasks.guard(FileTools.searchFiles(workspace), null),
-                        liveTasks.guard(FileTools.writeFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
-                        liveTasks.guard(FileTools.editFile(workspace, renderer, pauseAction, config.getTools().getFs()), null),
-                        liveTasks.guard(BashTool.bash(workspace, config.getTools().getBash(), terminal, renderer, pauseAction,
-                                taskPauseRequested::get), null)
-                );
+                .withTool(baseTools.toArray(Tool[]::new));
 
         // Optional per-role model overrides — same vendor as the main model unless
         // planner_vendor/reflector_vendor names a different one (see

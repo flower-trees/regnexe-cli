@@ -174,3 +174,23 @@ PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -
 ```
 
 skill_process.run_bounded 提供进程组截止时间和部分输出，不自动重跑；旧通用 Runner 保持原状，P07 单例入口尚需接入。正式模型配置和业务评分尚未运行。Token 阈值为观察项，不能称为硬限制。
+
+
+## P07 首次真实指定 Skill 诊断
+
+[2026-11-13 报告](baselines/skill-week1-p07-2026-11-13/README.md)：一次真实任务，3 次模型调用、6979 Token，自动初筛通过，助手复核发现无依据描述，业务质量需要修正。P08 尚未运行，先进入 P09，不自动重测。
+
+新入口 skill_week1_runner.py 使用独立 home/workspace、只读基础工具白名单、一次执行标记与 P06 进程保护；只支持指定 Skill 单例，不触发 Auto。配置 skill-week1-offline.yml 不改全局配置。规则初筛不能证明没有编造，完整验收保留人工复核。
+
+```bash
+# 本地模拟，不调用官方模型或 Opik；先构建当前 CLI JAR。
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_description_score.py -v
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_week1_runner.py -v
+
+# prepare 不调用模型，要求相同构建/配置/Skill/输入已通过本地模拟验证。
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/skill_week1_runner.py prepare --output target/skill-eval-week1/<new-run>
+# 以下会调用真实模型：只有明确决定新诊断后才执行；当前应先分析已有失败。
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/skill_week1_runner.py run --output target/skill-eval-week1/<new-run>
+```
+
+run 要求 DEEPSEEK_KEY 非空和本机 Opik 健康，保存 stdout/stderr、任务账本、回答、初筛、Trace 与实际模型/用量。同目录禁止重复运行，失败也不重试；原始证据保留在忽略的 target 下，长期报告复制脱敏产物。旧综合 runner.py 不受影响。Token 阈值没有变成硬 Token 限制。

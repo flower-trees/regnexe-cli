@@ -1,0 +1,29 @@
+{
+  "automatic_status": "passed",
+  "checks": {
+    "json_fields": true,
+    "no_forbidden_source_word": true,
+    "no_internal_notes": true,
+    "no_parameter_table": true,
+    "no_parameter_list": true
+  },
+  "fact_initial_checks": {
+    "six_axes": true,
+    "teaching": true,
+    "light_handling": true,
+    "payload": true,
+    "reach": true,
+    "drag_teaching": true
+  },
+  "parsed": {
+    "description": "评测用协作机械臂 A6 是一款面向教学演示与轻型搬运场景的六轴协作机械臂，结构紧凑，支持拖拽示教。",
+    "detail_description": "评测用协作机械臂 A6 定位于教学演示与轻型搬运，六轴结构兼顾灵活性与易用性，适合课堂演示、教学实验以及轻量物件的搬运作业。\n\n该产品负载 3kg、工作半径 600mm，能够覆盖常见的桌面级教学与轻型作业需求。它支持拖拽示教，操作者可以直接手动引导机械臂完成动作示教，无需编写复杂程序，上手门槛低，便于在教学场景中快速演示与复用动作流程。"
+  },
+  "manual_review": "pending",
+  "manual_items": [
+    "文风与字段定位",
+    "固定事实的语义保留",
+    "未知事实/数字是否编造"
+  ],
+  "database_checks": "not_applicable_offline"
+}

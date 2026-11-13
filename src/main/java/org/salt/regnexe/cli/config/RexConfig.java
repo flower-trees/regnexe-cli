@@ -110,6 +110,8 @@ public class RexConfig {
         private int maxAgentIterations = 20;
         /** Optional opt-in evaluation caps. Null preserves normal dynamic iteration behavior. */
         private ExecutionBudget executionBudget;
+        /** Null exposes normal base tools; an explicit list restricts registration to those names. */
+        private List<String> allowedBaseTools;
         /**
          * Caps consecutive tool-call failures before a round aborts early with a diagnostic,
          * instead of grinding through the rest of maxAgentIterations retrying the same broken
