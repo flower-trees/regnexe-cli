@@ -6,7 +6,7 @@
 |---|---|---|
 | 01 | [CLI 总体设计](01-design.md) | 初始架构与分步实施方案；部分命令、目录及依赖已演进 |
 | 02 | [Agent 改进方向](02-agent-improvement.md) | 2026-07-07 的问题诊断与提案；部分已修复，任务分解提案曾决定不实施 |
-| 03 | [Skill 斜杠调用](03-skill-slash-invocation.md) | 直接调用 Skill 的方案与追加修订 |
+| 03 | [Skill 斜杠调用](03-skill-slash-invocation.md) | 统一执行链、执行预算及已知限制 |
 | 04 | [任务恢复设计](04-resume-task-design.md) | 当前 `/resume` 的设计与已知边界 |
 | 05 | [CLI 交互皮肤](05-cli-ui-theme.md) | 终端主题、渲染和确认交互方案 |
 | 06 | [Opik 链路追踪](06-opik-tracing.md) | 追踪接入、事件关系和使用限制 |

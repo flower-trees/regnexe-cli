@@ -1,4 +1,4 @@
-"""P07 deterministic initial checks; semantic/style acceptance remains manual."""
+"""Deterministic output checks; semantic/style acceptance remains manual."""
 import json
 import re
 

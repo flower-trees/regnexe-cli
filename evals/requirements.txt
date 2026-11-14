@@ -1,5 +1,4 @@
 opik==2.2.103
 pyyaml==6.0.3
-requests==2.34.2
 pexpect==4.9.0
 pyte==0.8.2

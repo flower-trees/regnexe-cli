@@ -6,7 +6,7 @@ from skill_description_score import score_description
 
 class DescriptionScoreTest(unittest.TestCase):
     def setUp(self):
-        self.reference = json.loads((Path(__file__).parent/'fixtures/skill-week1/description-reference.json').read_text())
+        self.reference = json.loads((Path(__file__).parent/'cases/description/example.json').read_text())
 
     def test_reference_passes_initial_checks_but_requires_manual_review(self):
         result = score_description(json.dumps(self.reference, ensure_ascii=False))

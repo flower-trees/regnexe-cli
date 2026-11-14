@@ -1014,10 +1014,6 @@ public class CliMain implements CommandLineRunner {
         renderer.setApprovalSession(ctx.getSessionId());
         RexConfig.AgentConfig ac = config.getAgent();
         WorkspaceContext workspace = ctx.getWorkspace();
-        if ((ac.isRequireFactualReview() || ac.getOfflineTextReview() != null)
-                && ac.getFactualReviewSource() == null) {
-            throw new IllegalArgumentException("Factual review requires an explicit fact source");
-        }
         BaseChatModel summarizer = buildSummarizerModel(config);
         List<Tool> baseTools = new ArrayList<>(List.of(
                 liveTasks.guard(FileTools.readFile(workspace), null),
@@ -1047,8 +1043,6 @@ public class CliMain implements CommandLineRunner {
                 .withMaxRounds(ac.getMaxRounds())
                 .withMaxAgentIterations(ac.getMaxAgentIterations())
                 .withExecutionBudget(ac.getExecutionBudget())
-                .withAuthoritativeFacts(ac.getFactualReviewSource())
-                .withOfflineTextReview(ac.getOfflineTextReview())
                 .withMaxConsecutiveToolFailures(ac.getMaxConsecutiveToolFailures())
                 .withSessionBufferSize(ac.getSessionBufferSize())
                 .withSessionCompactPeriod(ac.getSessionCompactPeriod())

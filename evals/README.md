@@ -1,211 +1,42 @@
-# Regnexe CLI 评测
+# 任务验证
 
-默认评测配置使用 DeepSeek 官方 `deepseek-flash`，执行、规划、反思以及旧数据集中可选的 LLM Judge 均使用 Flash；Key 通过 `DEEPSEEK_KEY` 引用。新加固用例采用规则和真实工具证据评分，不调用 Judge。
+目标：发现框架做错了什么，以同一任务验证修复效果，并观察实际 Token。这里保留一个任务 Runner、明确规则初筛和本地回归，不维护阶段基线或额外模型评分协议。
 
-## 本次测试集
+## 运行一个任务
 
-| 文件 | 数量 | 用途 |
-|---|---:|---|
-| `dataset/hardening-regression-2026-11.yaml` | 31 | 对应已有 Java 回归测试，不交给模型判断 |
-| `dataset/hardening-agent-2026-11.yaml` | 12 | 真实模型下的正常工具调用、超时、路径边界与多轮任务 |
-| `dataset/hardening-interactive-2026-11.yaml` | 4 | 真实 PTY 自动验收 Esc 暂停、Ctrl+C 退出、会话隔离、Agent 重建与重启 |
-| `dataset/cases.yaml` | 28 | 保留的旧综合用例，不与本次结果混合 |
-
-计划与观察顺序见 [加固功能评测计划](../docs/plan/02-hardening-evaluation-plan.md)。导入数据集只保存定义，不表示已执行或通过。
-
-首轮完整评测已执行，见[评测报告](../docs/log/2026-11/2026-11-04.md#7-首次完整评测结果)：既定断言 47/47，但补充输入保真检查仅 8/12，应先修复 Shell 输入转义问题再针对性复测。
-
-## 环境
-
-```bash
-python3 -m venv evals/.venv
-evals/.venv/bin/python -m pip install -r evals/requirements.txt
-```
-
-需要 Java 17+、Maven、运行中的本机 Opik（`http://localhost:28173`）及环境变量 `DEEPSEEK_KEY`。不再需要 `llm-router` 或 `LITELLM_MASTER_KEY`。
-
-本地交互配置可先预览，再更新；更新会先备份原文件，只替换模型配置，Key 不写成明文：
-
-```bash
-evals/.venv/bin/python scripts/configure-deepseek-flash.py
-evals/.venv/bin/python scripts/configure-deepseek-flash.py --apply
-```
-
-## 只准备，不执行模型
-
-```bash
-# 离线校验测试定义、Java 测试存在性、评分规则及临时夹具
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/prepare_hardening.py
-
-# 检查评测框架；不调用模型或 Opik
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_hardening.py -v
-
-# 将三组定义导入本机 Opik，并回读检查；不创建实验分数
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/prepare_hardening.py --upload
-```
-
-重复导入相同定义不增加记录；已存在定义发生改变时要求换数据集版本，避免静默混用结果。
-
-## 后续执行真实模型测试
-
-以下命令会真实调用官方 API 并创建 Opik Experiment。本次准备阶段不执行。
+先构建 CLI 并安装所引用的 Agent 快照，准备 Python 依赖：
 
 ```bash
 mvn -o verify
-
-# 先只跑一个冒烟用例，核对模型、Trace、工具证据与评分链路
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/runner.py \
-  --cases evals/dataset/hardening-agent-2026-11.yaml \
-  --dataset-name regnexe-cli-hardening-2026-11-agent-v1 \
-  --tag deepseek-flash-smoke-20261104 --case-id smoke-utf8 --keep-workdirs
-
-# 冒烟确认后再运行完整 12 例
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/runner.py \
-  --cases evals/dataset/hardening-agent-2026-11.yaml \
-  --dataset-name regnexe-cli-hardening-2026-11-agent-v1 \
-  --tag deepseek-flash-hardening-v1 --keep-workdirs
+python3 -m venv evals/.venv
+evals/.venv/bin/pip install -r evals/requirements.txt
 ```
 
-支持 `--only smoke,normal_files` 等分类过滤和 `--jar /absolute/path/to/regnexe-cli.jar`。默认使用仓库 `target/regnexe-cli.jar`，避免误用未更新的已安装 wrapper；测试前必须构建最新产物。
-
-每例在独立临时父目录内建立 `workspace/`、`outside/` 和 `home/`。`outside/` 只是测试框架拥有的合成夹具，不是用户数据；`home/` 用于隔离 Java 会话库和用户插件。所有夹具和链接必须位于该临时父目录。
-
-`rex-eval-config.yml` 关闭写入和 Shell 确认以适配管道输入，不能据此验证 `always`。真实程序并未运行在操作系统沙箱中，测试目录隔离不等于限制 Shell 的所有能力。新用例只使用受控合成内容，不运行旧数据集中的外发请求或删除任务。
-
-## 结果与观察
-
-### Java 回归结果回写与真实 PTY
-
-先执行最新的 `mvn -o verify`，再将实际 JUnit 报告中的 31 项加固结果关联到已有数据集：
+当前任务是离线产品介绍改写，使用相邻 `../salt-robot-skills` 中的 `robot-description-style`，官方模型 Key 来自 `DEEPSEEK_KEY`。不注册数据库、上传、Shell 或修改文件工具。配置见 `task-config.yml`。
 
 ```bash
-evals/.venv/bin/python evals/publish_results.py \
-  --suite regression --tag my-run --output-dir evals/results/my-run
-
-# 以下命令会真实调用模型并驱动 PTY，不是准备操作
-evals/.venv/bin/python evals/interactive_runner.py --output-dir evals/results/my-run
-
-evals/.venv/bin/python evals/publish_results.py \
-  --suite interactive --tag my-run \
-  --results-file evals/results/my-run/interactive-executions.json \
-  --output-dir evals/results/my-run
+evals/.venv/bin/python evals/task_runner.py prepare --output target/task-review/run-1
+evals/.venv/bin/python evals/task_runner.py run --output target/task-review/run-1
 ```
 
-PTY 使用独立 Java 用户目录并开启确认，保留终端日志、会话库和真实进程检查。回写实验的 Trace 时长是记录上传耗时，实际测试时长看输出中的 `elapsed_s`；Token 应包含暂停前后的全部终端分段汇总。
+prepare 只准备输入，不调用模型；run 经正常 CLI 的指定 Skill 执行链运行一次，不自动重试整个任务。输出目录不能重复使用。运行有模型费用，按已经讨论确认的范围执行。
 
-`review_input_fidelity.py` 可比较完整模型运行的输入与任务账本，并向已有实验追加 `task_input_fidelity`，不重新调用模型。`verify_run.py` 是本轮固定产物的回读检查工具，可核对分数与输出，按需补齐缺失的真实结果。
+查看 `answer.txt`、`score.json`、`result.json`；必要时看 `stdout.txt`、`stderr.txt`、`state.json`。准备记录只检查本次 JAR、配置、输入和所选 Skill 是否在 prepare/run 之间改变，不扫描全部代码、Skill 或 Python 环境。
 
-- 评分同时检查文件结果/最终回答和实际工具 Span；没有工具证据，不能仅凭“成功”“已拦截”判通过。
-- 多轮用例等待所有任务 Trace 完成，跨轮收集工具结果；不随意选取会话的一条 Trace。
-- `evidence_missing` 表示证据未收齐，应先区分模型未调用工具与 Opik 观察链路问题。
-- 实验输出包含会话名、Trace ID、工具观察、任务状态和耗时，原始模型 Token 汇总在任务 Trace 的元数据中。
-- 超时用例看工具 Span 的耗时与真实超时结果，不能把包含模型推理的总耗时当作 Shell 的 30 秒。
-- 不把持久化 `always` 当作已实现能力：当前重启后仍需确认，该需求记录在月度 TODO。
+规则初筛只检查格式、明确污染片段及事实关键词，不代表语义正确。人工检查有没有编造、是否满足用户要求；FINISHED 也不等于任务做对。`cases/description/example.json` 是表达示例，不用于逐字评分，不传给模型。
 
-Opik 默认使用本机 API 和 `default` workspace，可通过 `OPIK_URL_OVERRIDE` / `OPIK_WORKSPACE` 覆盖。入口设置 localhost 的 `NO_PROXY`，避免本机 Trace 被转发到外部代理。
+Opik 用于查看过程和实际 Token，默认本机项目 `regnexe-skill-week1`。采集失败记录为 `observation_error`，与任务执行失败分开；未采集到 Token 就标为缺失，不估算成真实用量，不补写 Trace。需要比较效果时保持任务、模型、Skill 和配置一致。
 
-旧综合数据集仍可使用原来的 `--tag` / `--only` / `--case-id` 入口；其部分用例使用 Judge，因此不与本次规则评测直接比较。
-
-
-### 本地交互控制回归
+## 本地回归
 
 ```bash
-mvn package
-evals/.venv/bin/python -m unittest discover -s evals -p test_interactive_controls.py -v
+PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p 'test_*.py' -v
 ```
 
-这 11 项测试使用真实 PTY 和本地模拟模型 HTTP 服务，无需 Key 或 Opik：验证模型等待时补充输入、补充指令改变同一任务的工具动作、Esc 取消模型/Shell/确认等待、Ctrl+C 退出，以及四方向键授权选择、默认拒绝、always 保留与输入草稿保留，以及命名会话重启后展示历史并继续同一任务、会话名称列表的方向键选择与取消、当前工作目录筛选及按名称跨目录打开后的列表范围，以及底部输入的上下横线、单行元数据、连续输出后的屏幕位置和终端缩放（使用 pyte 校验最终屏幕），以及全屏模式的滚轮、滚动条点击/拖动、翻页、草稿固定、活动状态与颜色，以及默认应用内选区、运行时 /mouse on/off 切换和关闭后的键盘翻页。兼容模式用例继续覆盖既有控制；全屏用例单独启用 fullscreen 与颜色，新增选区用例通过 PATH 中的假剪贴板工具验证中文/emoji/组合字符、跨行原文、松开自动复制、单击不复制、缩放后选区与草稿保留、Alt+C 重试和 OSC 52 解码内容。所有剪贴板写入都落到临时文件，不更改系统剪贴板，也不请求真实模型。模拟服务测试用于确定性交互回归，不代替官方模型评测。
+这些测试使用本机模拟模型或临时进程，不产生真实模型费用。保留执行超时/进程终止、明确输出规则、Runner 接线、配置更新和 PTY 交互回归。测试通过只证明相应代码行为，不证明任务准确率。
 
-真实终端现在始终接收输入，运行中普通输入补充到当前任务；Esc 暂停，Ctrl+C 退出。确认等待时可用上下或左右方向键选择、Enter 确认（默认 no），也兼容输入 yes/no/always/pause。管道输入仍按原先逐条执行，避免批量用例的多轮输入被误作同一任务补充。原 `interactive-ctrl-c` 用例 ID 保留作历史对比，其步骤已改为 Esc 暂停并增加 Ctrl+C 退出验收。
+## 已知失败样例
 
+`cases/description/historical-failure.txt` 保存首次真实输出：包含“结构紧凑”“无需编写复杂程序，上手门槛低”等没有输入依据的描述，Reflector 当时仍返回 FINISH。原 Trace：`01a1d364-d88f-77fd-89d7-ed540a0334d8`；当次总用量 6979 Token。
 
-## Skill 首周 P00 / P01：无模型基线与加载检查
-
-```bash
-mvn -o -DskipTests package
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/prepare_skill_week1.py
-```
-
-默认读取相邻 salt-robot-skills 的 `.claude/skills`，用本次独立配置、home、workspace 与 enabled.yml，通过真实 JAR 内的 CLI 目录解析和 Skill 注册/启用逻辑生成清单。不调用 CLI main 或 Agent build，不连接 MCP，不执行工具或模型。`evals/skill-week1-inventory.yml` 仅用于 P00/P01，不是可以直接运行业务任务的评测配置，轮次设置也不是 P06 已验证的硬预算。
-
-原始结果放在 `target/skill-eval-week1/<UTC时间>/`；[2026-11-09 快照](baselines/skill-week1-2026-11-09/README.md)保留版本/产物摘要和逐项加载结果。可用 `--skills-root`、`--jar`、`--output` 指定来源；输出目录必须新建或为空。此清单不等于数据集得分，不代表 Skill 已被模型正确选择或业务依赖已经就绪。
-
-
-## Skill 首周 P02：最小环境检查（无模型）
-
-先完成 P00/P01 并保留其原始 runtime 目录，再执行：
-
-```bash
-python3 -m venv target/skill-eval-week1/business-venv
-target/skill-eval-week1/business-venv/bin/python -m pip install -r evals/requirements-skill-week1.txt
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/check_skill_environment.py
-```
-
-默认使用本次 P00 的 `target/skill-eval-week1/20261109T132544Z`；换基线时通过 `--baseline` 指定，JAR 哈希不一致会停止。可用 `--business-python` 指定业务 venv 解释器，`--output` 指定新的证据目录。Runner 需要已有 Opik SDK，本机 Opik 必须可用；脚本会向 `regnexe-skill-preflight` 写入有标记的前置 Trace 并回读，不调用模型或业务数据库，不生成业务得分。
-
-子进程私有 PATH 用来验证裸 `python3`，不会修改系统环境。真实 `lib/db.py` 复制到无 `.env` 的隔离工作区，导入时守卫连接入口；不等于测试库已准备好。此入口直接检查打包 Shell 后端，不能代替完整 Agent 运行或授权 UI 测试。[2026-11-10 快照](baselines/skill-week1-2026-11-10/README.md)记录结果与验证范围。
-
-
-## Skill 首周 P04：单产品任务夹具
-
-[用例 JSON](fixtures/skill-week1/description-case.json)、[参考草稿](fixtures/skill-week1/description-reference.json)与[验收清单](fixtures/skill-week1/description-acceptance.md)定义一个合成产品。尚未调用模型或创建数据库夹具，参考文风待人工确认；此处没有新增业务运行入口或已通过的测评分数。后续 Auto 输入仅投递 auto_prompt/facts/before，不能泄漏完整用例中的 Skill 名称与参考答案。实际评分接入留 P06，数据库夹具留 P10。
-
-
-## Skill 统一基线检查
-
-执行链改造前的统一清单及使用方式见 [pre-P05 基线](baselines/skill-week1-pre-p05/README.md)。运行 `skill_baseline.py check --manifest <清单>` 核对内容；返回 0/1/2 分别表示一致/变化/校验异常。采集新清单使用 `capture` 并指定新路径，不覆盖原清单。当前仅离线加载配置，尚未接入 Runner 自动门禁；正式测评还需记录实际配置、验证预算并做数据库状态前检。
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_baseline.py -v
-```
-
-
-## P05 共享执行链验证
-
-[post-P05 清单与结果](baselines/skill-week1-post-p05/README.md)记录指定 Skill 转普通任务后的构建与测试证据。Agent 使用 `mvn -o -Plocal-tests test`，其中 RequiredSkillExecutionTest 使用内存固定响应模型检查完整任务链、恢复和工具范围，不调用官方模型。CLI 用 `mvn -o verify` 集成新快照。正式测评仍等待 P06 预算验收，勿将这些工程测试算作业务任务成功率。
-
-
-## P06 预算与失败分类
-
-[预算配置、计数定义、分类及验证结果](baselines/skill-week1-post-p06/README.md)记录本轮无真实模型证据。[skill-week1-budget.yml](skill-week1-budget.yml)只是供后续单例配置合并的片段，不是完整 REX_CONFIG。任务停止原因、工具观察结果与 Runner 进程失败分开看，不能仅凭退出码 0 或 FINISHED 判业务成功。
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_process.py -v
-```
-
-skill_process.run_bounded 提供进程组截止时间和部分输出，不自动重跑；旧通用 Runner 保持原状，P07 单例入口尚需接入。正式模型配置和业务评分尚未运行。Token 阈值为观察项，不能称为硬限制。
-
-
-## P07 首次真实指定 Skill 诊断
-
-[2026-11-13 报告](baselines/skill-week1-p07-2026-11-13/README.md)：一次真实任务，3 次模型调用、6979 Token，自动初筛通过，助手复核发现无依据描述，业务质量需要修正。P08 尚未运行，先进入 P09，不自动重测。
-
-新入口 skill_week1_runner.py 使用独立 home/workspace、只读基础工具白名单、一次执行标记与 P06 进程保护；只支持指定 Skill 单例，不触发 Auto。配置 skill-week1-offline.yml 不改全局配置。规则初筛不能证明没有编造，完整验收保留人工复核。
-
-```bash
-# 本地模拟，不调用官方模型或 Opik；先构建当前 CLI JAR。
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_description_score.py -v
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python -m unittest discover -s evals -p test_skill_week1_runner.py -v
-
-# prepare 不调用模型，要求相同构建/配置/Skill/输入已通过本地模拟验证。
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/skill_week1_runner.py prepare --output target/skill-eval-week1/<new-run>
-# 以下会调用真实模型：只有明确决定新诊断后才执行；当前应先分析已有失败。
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/skill_week1_runner.py run --output target/skill-eval-week1/<new-run>
-```
-
-run 要求 DEEPSEEK_KEY 非空和本机 Opik 健康，保存 stdout/stderr、任务账本、回答、初筛、Trace 与实际模型/用量。同目录禁止重复运行，失败也不重试；原始证据保留在忽略的 target 下，长期报告复制脱敏产物。旧综合 runner.py 不受影响。Token 阈值没有变成硬 Token 限制。
-
-
-## P09 反思逐项事实核验与历史回放
-
-[首轮结果及校准限制](baselines/skill-week1-p09-2026-11-13/README.md)：保持 P07 原始错误答案，只改变可选反思协议；一次真实反思已拒绝旧答案，但部分转述/术语解释被保守拒绝，正常生成质量尚未重测。
-
-CLI agent.factual_review_source 提供正向事实 Map，require_factual_review=true 要求显式来源；缺少时失败。默认不启用。框架核验完整片段覆盖和 JSON pointer，不能以结构验证替代语义/人工复核。评测配置通过 SKILL_EVAL_FACTS_JSON 传递现有 facts 的正向部分，Planner/Executor 提示词不变。
-
-```bash
-# 对实际打包 Reflector 回放旧固定响应，完全本地。
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/replay_factual_review.py prepare --mock --output target/p09/example-mock
-PYTHONDONTWRITEBYTECODE=1 evals/.venv/bin/python evals/replay_factual_review.py run --output target/p09/example-mock
-```
-
-不带 --mock 的 prepare/run 会进入真实模型回放；run 硬限一次框架调用、120 秒且禁止同目录再执行。本轮真实调用已完成，不自动重跑。回放只验证反思检测，没有 Planner/Skill/工具执行，不计为新的 P07 业务样本。
+此问题尚未解决。之后尝试的逐条事实协议和离线专用压缩已撤出核心，不作为有效修复；后续围绕正常任务的具体问题讨论最小改动。

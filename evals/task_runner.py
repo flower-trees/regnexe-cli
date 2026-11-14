@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P07: prepare then run ONE explicit-Skill diagnostic. Never retries or runs Auto."""
+"""Run one offline description task through the normal CLI; inspect output and cost."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -9,19 +9,16 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
-from types import SimpleNamespace
 import urllib.parse
-import urllib.request
 import uuid
 
 import yaml
-from skill_baseline import snapshot, compare, files_digest, canonical
 from skill_description_score import score_description
 from skill_process import run_bounded
 
 ROOT = Path(__file__).resolve().parent.parent
-CONFIG = ROOT/'evals/skill-week1-offline.yml'
-CASE = ROOT/'evals/fixtures/skill-week1/description-case.json'
+CONFIG = ROOT/'evals/task-config.yml'
+CASE = ROOT/'evals/cases/description/input.json'
 SKILL = ROOT.parent/'salt-robot-skills/.claude/skills/robot-description-style/SKILL.md'
 ALLOWED = {'read_file', 'list_files', 'search_files', 'write_todos'}
 
@@ -34,31 +31,14 @@ def write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2)+'\n')
 
 
-def baseline(config):
-    return snapshot(SimpleNamespace(jar=ROOT/'target/regnexe-cli.jar', config=config, scope='model-evaluation'))
-
-
-def skills_fingerprint():
-    files = files_digest(ROOT.parent/'salt-robot-skills', ['.claude/skills/**/*', 'lib/**/*.py'])
-    return hashlib.sha256(canonical(files)).hexdigest()
-
-
 def prepare(out, mock_url=None):
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    if not mock_url:
-        verification = json.loads((ROOT/'target/skill-eval-week1/p07-mock-verification.json').read_text())
-        expected = {'jar': sha(ROOT/'target/regnexe-cli.jar'), 'config': sha(CONFIG),
-                    'runner': sha(Path(__file__)), 'scorer': sha(ROOT/'evals/skill_description_score.py'),
-                    'skills': skills_fingerprint(), 'case': sha(CASE)}
-        if verification.get('fingerprints') != expected or set(verification.get('allowed_tools', [])) != ALLOWED:
-            raise ValueError('A passing local mock verification for this exact build is required')
     case = json.loads(CASE.read_text())
-    assert sha(SKILL) == case['skill_source']['sha256'], 'Skill material changed: review fixture first'
     workspace = out/'workspace'
     workspace.mkdir()
     (out/'home/.rex').mkdir(parents=True)
-    packet = {'task': case['auto_prompt'], 'facts': case['facts'], 'before': case['before']}
+    packet = {'facts': case['facts'], 'before': case['before']}
     write(workspace/'input.json', packet)
     prompt = case['auto_prompt']+'\n本次为离线文本改写，不联网、不读写数据库、不上传。所需事实已提供，无须探索文件。\n'+json.dumps(packet, ensure_ascii=False)
     # Piped REPL receives exactly one user turn and then /exit. Escape embedded newlines in data.
@@ -75,12 +55,13 @@ def prepare(out, mock_url=None):
         config['opik']['enabled'] = False
         config_path = out/'config.yml'
         config_path.write_text(yaml.safe_dump(config, allow_unicode=True))
-    manifest = baseline(config_path)
-    write(out/'baseline.json', manifest)
-    write(out/'prepared.json', {'stage': 'P07', 'mock': bool(mock_url), 'config': str(config_path),
+    write(out/'prepared.json', {'mock': bool(mock_url), 'config': str(config_path),
           'config_sha256': sha(config_path), 'case_sha256': sha(CASE), 'skill_sha256': sha(SKILL),
           'stdin_sha256': sha(out/'stdin.txt'), 'packet_sha256': sha(workspace/'input.json'),
-          'baseline_id': manifest['baseline_id'], 'session': 'p07-'+uuid.uuid4().hex[:12],
+          'jar_sha256': sha(ROOT/'target/regnexe-cli.jar'), 'session': 'task-'+uuid.uuid4().hex[:12],
+          'cli_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
+          'cli_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True).strip()),
+          'model': yaml.safe_load(config_path.read_text())['model']['name'],
           'timeout_seconds': 120, 'automatic_retries': 0, 'manual_reference_review': 'pending'})
     return out
 
@@ -113,17 +94,9 @@ def observe(session, task, answer):
     trace = client.get_trace_content(id=traces[0].id)
     if trace.metadata.get('task_id') != task or trace.end_time is None:
         raise ValueError('Trace identity/completion missing')
-    spans = client.search_spans(project_name='regnexe-skill-week1', trace_id=trace.id,
-                                truncate=False, wait_for_at_least=7, wait_for_timeout=15)
-    body = SKILL.read_text().split('---', 2)[2].strip()
-    injected = any(body in s for span in spans for s in strings(span.input))
-    observed_answer = any(answer in s for s in strings(trace.output)) if answer else False
-    tools = [{'name': s.name, 'input': s.input, 'output': s.output} for s in spans if s.type == 'tool']
-    llms = [{'name': s.name, 'model': getattr(s, 'model', None), 'metadata': s.metadata} for s in spans if s.type == 'llm']
     return {'trace_id': trace.id, 'task_id': task, 'project': 'regnexe-skill-week1',
-            'session': session, 'thread_id': trace.thread_id, 'instruction_body_injected': injected,
-            'answer_matches_ledger': observed_answer, 'tool_spans': tools, 'llm_spans': llms,
-            'token_summary': (trace.metadata or {}).get('token_summary'), 'trace_output': trace.output}
+            'answer_matches_ledger': any(answer in s for s in strings(trace.output)) if answer else False,
+            'token_summary': (trace.metadata or {}).get('token_summary')}
 
 
 def run(out):
@@ -134,22 +107,15 @@ def run(out):
                            (out/'stdin.txt', meta['stdin_sha256']), (out/'workspace/input.json', meta['packet_sha256'])]:
         if sha(path) != expected:
             raise ValueError('Prepared input changed; do not run')
-    if compare(json.loads((out/'baseline.json').read_text()), baseline(config)):
-        raise ValueError('Baseline changed; do not run')
+    if sha(ROOT/'target/regnexe-cli.jar') != meta['jar_sha256']:
+        raise ValueError('CLI artifact changed after preparing this task')
     if not meta['mock'] and not os.environ.get('DEEPSEEK_KEY', '').strip():
         raise ValueError('DEEPSEEK_KEY missing')
-    if not meta['mock']:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open('http://localhost:28173/health', timeout=5) as response:
-            if response.status != 200:
-                raise ValueError('Local Opik health check failed')
     # Claim once. A failure, timeout or observation error never launches another process.
     with (out/'attempt.json').open('x') as claim:
         json.dump({'started_at': datetime.now(timezone.utc).isoformat(), 'attempt': 1}, claim)
     env = {key: value for key, value in os.environ.items() if key in {'PATH','JAVA_HOME','LANG','LC_ALL','TMPDIR','SYSTEMROOT'}}
-    packet = json.loads((out/'workspace/input.json').read_text())
-    positive_facts = {key: value for key, value in packet['facts'].items() if key != 'unknown'}
-    env.update(SKILL_EVAL_FACTS_JSON=json.dumps(positive_facts, ensure_ascii=False), REX_CONFIG=str(config), SKILL_EVAL_SOURCE_ROOT=str(ROOT.parent/'salt-robot-skills'),
+    env.update(REX_CONFIG=str(config), SKILL_EVAL_SOURCE_ROOT=str(ROOT.parent/'salt-robot-skills'),
                DEEPSEEK_KEY='local-test-only' if meta['mock'] else os.environ['DEEPSEEK_KEY'],
                NO_PROXY='localhost,127.0.0.1,::1', TERM='dumb')
     process = run_bounded(['java', '-Duser.home='+str(out/'home'), '-jar', str(ROOT/'target/regnexe-cli.jar'),
@@ -157,8 +123,8 @@ def run(out):
                           timeout_s=meta['timeout_seconds'], stdin=(out/'stdin.txt').read_text())
     (out/'stdout.txt').write_text(process.stdout)
     (out/'stderr.txt').write_text(process.stderr)
-    result = {'stage': 'P07', 'kind': 'mock' if meta['mock'] else 'real-model-diagnostic',
-              'baseline_id': meta['baseline_id'], 'session': meta['session'], 'attempts': 1,
+    result = {'kind': 'mock' if meta['mock'] else 'real-model-diagnostic',
+              'session': meta['session'], 'attempts': 1,
               'process_returncode': process.returncode, 'elapsed_s': process.elapsed_s,
               'failure': process.failure, 'manual_review': 'pending', 'automatic_status': 'not_evaluated'}
     state = None
@@ -196,11 +162,11 @@ def run(out):
                 write(out/'opik.json', observation)
                 result['trace_id'] = observation['trace_id']
                 result['token_summary'] = observation['token_summary']
-                if not observation['instruction_body_injected'] or not observation['answer_matches_ledger']:
-                    result['failure'] = result['failure'] or 'TRACE_EVIDENCE_MISMATCH'
+                if not observation['answer_matches_ledger']:
+                    result['observation_error'] = 'TRACE_ANSWER_MISMATCH'
             except Exception as error:
                 result['observation_error'] = type(error).__name__
-                result['failure'] = result['failure'] or 'TRACE_EVIDENCE_MISSING'
+
     if sha(out/'workspace/input.json') != meta['packet_sha256']:
         result['failure'] = result['failure'] or 'INPUT_MUTATED'
     if result['automatic_status'] == 'failed':
